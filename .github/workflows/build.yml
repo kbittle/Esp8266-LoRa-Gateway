@@ -27,6 +27,10 @@ jobs:
       - name: Build Firmware
         shell: bash
         run: |
+          # Allow Git to run commands on workspace files owned by host user
+          git config --global --add safe.directory "*"
+
+          # Build using GNU Mak
           make -j$(nproc) CONFIG_SDK_PYTHON=python3
 
       - name: Upload Build Artifacts
