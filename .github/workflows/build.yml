@@ -1,0 +1,43 @@
+name: Build ESP8266 Gateway Firmware
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  pull_request:
+    branches: [ "main", "dev" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/esp8266-rtos-sdk:latest
+
+    defaults:
+      run:
+        working-directory: esp-gateway-project
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0 # Ensures git tags/commit history are fetched for rev-parse
+
+      - name: Build Firmware
+        shell: bash
+        run: |
+          # Set up IDF environment variables inside container
+          export IDF_PATH=/opt/esp/ESP8266_RTOS_SDK
+          export PATH="/opt/esp/xtensa-lx106-elf/bin:$PATH"
+
+          # Build using the GNU Make toolchain
+          make -j$(nproc) CONFIG_SDK_PYTHON=python3
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp8266-firmware-binaries
+          path: |
+            esp-gateway-project/build/*.bin
+            esp-gateway-project/build/bootloader/bootloader.bin
+            esp-gateway-project/build/partition_table/partition-table.bin

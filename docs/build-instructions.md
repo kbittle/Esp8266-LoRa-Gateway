@@ -88,5 +88,6 @@ Use makefile to build project. Output will be under build folder.
 
 ```Bash
 cd ../esp-gateway-project
+source ~/esp/esp-env/bin/activate
 make -j$(nproc) CONFIG_SDK_PYTHON=python3
 ```
