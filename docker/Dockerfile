@@ -36,6 +36,6 @@ ENV PATH="/opt/esp/xtensa-lx106-elf/bin:${PATH}"
 
 # Pin setuptools and install SDK python requirements
 RUN python3 -m pip install --no-cache-dir "setuptools<82" && \
-    python3 -m pip install --no-cache-dir --break-system-packages -r ${IDF_PATH}/requirements.txt
+    python3 -m pip install --no-cache-dir -r ${IDF_PATH}/requirements.txt
 
 WORKDIR /workspace
