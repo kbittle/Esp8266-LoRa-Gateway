@@ -40,4 +40,5 @@ The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01 LoRa Module** (SX1278), a
 ## 📖 Developer Guides
 
 * **💻 [SW Dev Environment Setup](docs/build-instructions.md)** — Build instructions
+* **⚡ [FW Loading Instructions](docs/flash-instructions.md)** — Firmware Loading instructions
 
