@@ -9,8 +9,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: espressif/esp8266-rtos-sdk:latest
 
     defaults:
       run:
@@ -21,16 +19,42 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0 # Ensures git tags/commit history are fetched for rev-parse
+          fetch-depth: 0 # Ensures git history is fetched for rev-parse in Makefile
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git wget make libncurses-dev flex bison gperf \
+                              python3 python3-pip python3-venv python3-serial
+
+      - name: Set up Python Virtual Environment
+        run: |
+          python3 -m venv ~/esp-env
+          source ~/esp-env/bin/activate
+          pip install "setuptools<82"
+
+      - name: Download Xtensa Toolchain & ESP8266 RTOS SDK
+        run: |
+          mkdir -p ~/esp
+          cd ~/esp
+          wget -q https://dl.espressif.com/dl/xtensa-lx106-elf-gcc8_4_0-esp-2020r3-linux-amd64.tar.gz
+          tar -xzf xtensa-lx106-elf-gcc8_4_0-esp-2020r3-linux-amd64.tar.gz
+          git clone --recursive https://github.com/espressif/ESP8266_RTOS_SDK.git
+
+      - name: Install Python Requirements
+        run: |
+          source ~/esp-env/bin/activate
+          export IDF_PATH="$HOME/esp/ESP8266_RTOS_SDK"
+          pip install -r $IDF_PATH/requirements.txt
 
       - name: Build Firmware
         shell: bash
         run: |
-          # Set up IDF environment variables inside container
-          export IDF_PATH=/opt/esp/ESP8266_RTOS_SDK
-          export PATH="/opt/esp/xtensa-lx106-elf/bin:$PATH"
+          source ~/esp-env/bin/activate
+          export IDF_PATH="$HOME/esp/ESP8266_RTOS_SDK"
+          export PATH="$HOME/esp/xtensa-lx106-elf/bin:$PATH"
 
-          # Build using the GNU Make toolchain
+          # Build using GNU Make
           make -j$(nproc) CONFIG_SDK_PYTHON=python3
 
       - name: Upload Build Artifacts
