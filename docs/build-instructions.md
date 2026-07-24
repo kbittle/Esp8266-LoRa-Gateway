@@ -1,5 +1,7 @@
 # How to setup environment:
 
+Follow these steps to setup the espressif SDK and python virtual environment setup.
+
 ## Step 1: Install Required Ubuntu Dependencies
 
 Open your WSL Ubuntu terminal and run:
@@ -91,3 +93,14 @@ cd ../esp-gateway-project
 source ~/esp/esp-env/bin/activate
 make -j$(nproc) CONFIG_SDK_PYTHON=python3
 ```
+
+# Docker Container Build
+
+Instead of natively setting up all these tools. I created a docker container with the environment already setup. This is under the docker folder. 
+
+To build this:
+- Go to actions tab under github project repo
+- Select "Publish Docker Build Image" workflow
+- Hit "Run workflow". 
+
+This will publish the built container to the users container registry. Update build.yml with the install path.

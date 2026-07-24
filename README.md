@@ -8,8 +8,11 @@ Custom PCB and software for WiFi(ESP8266) to LoRa(Ra-01) gateway. This is meant 
 
 ```text
 Esp8266-LoRa-Gateway/
+├── docker/                  # Files to build docker container
 ├── docs/                    # Datasheets, schematics, and reference manuals
 ├── esp-gateway-project/     # ESP8266 Project
+|    ├── build               # Build output folder
+|    └── main                # Source files
 └── gerbers/                 # PCB Fab files
 ```
 

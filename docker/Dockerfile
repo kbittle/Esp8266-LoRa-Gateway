@@ -3,7 +3,7 @@ FROM ubuntu:22.04
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# Install system dependencies (ADDED python-is-python3 HERE)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     wget \
@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     python3-serial \
+    python-is-python3 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
