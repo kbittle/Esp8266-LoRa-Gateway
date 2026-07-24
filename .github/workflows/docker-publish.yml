@@ -1,12 +1,7 @@
 name: Publish Docker Build Image
 
 on:
-  push:
-    branches: [ "main", "dev" ]
-    paths:
-      - 'Dockerfile'
-      - '.github/workflows/docker-publish.yml'
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+  workflow_dispatch: # Manual trigger only
 
 env:
   REGISTRY: ghcr.io
