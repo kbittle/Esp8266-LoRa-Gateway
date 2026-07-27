@@ -6,14 +6,49 @@
 #include "driver/gpio.h"
 #include "driver/spi.h"
 
-// Hardware Pin Definitions for Ra-01SH (ESP8266/ESP32)
+// Hardware Pin Definitions for Ra-01SH
 #define LORA_RST_GPIO   GPIO_NUM_4
 #define LORA_NSS_GPIO   GPIO_NUM_5
 #define LORA_BUSY_GPIO  GPIO_NUM_16
 #define LORA_DIO1_GPIO  GPIO_NUM_15
 
-// High-level driver functions
-void lora_init(void);
+// SWSD003 header forward declarations for data types
+#include "sx126x.h"
+
+/**
+ * @brief Configuration struct for LoRa parameters
+ */
+typedef struct {
+    uint32_t frequency_hz;            // RF frequency in Hz (e.g., 915000000)
+    int8_t power_dbm;                 // Output Power in dBm (-9 to +22)
+    sx126x_lora_sf_t sf;   // Spreading Factor (e.g., SX126X_LORA_SF12)
+    sx126x_lora_bw_t bw;   // Bandwidth (e.g., SX126X_LORA_BW_125)
+    sx126x_lora_cr_t cr;   // Coding Rate (e.g., SX126X_LORA_CR_4_5)
+    uint16_t preamble_length;         // Preamble length in symbols
+    bool header_explicit;             // true = EXPLICIT, false = IMPLICIT
+    uint8_t payload_length;           // Maximum / fixed payload length
+    bool crc_on;                      // true = CRC enabled, false = disabled
+    bool invert_iq;                   // true = Standard Rx/Tx Inverted IQ, false = Standard IQ
+} lora_config_t;
+
+/**
+ * @brief Helper Macro providing default initialization values (915 MHz, SF12, BW125, CR4/5)
+ */
+#define LORA_CONFIG_DEFAULT() {                             \
+    .frequency_hz    = 915000000,                           \
+    .power_dbm       = 14,                                  \
+    .sf              = SX126X_LORA_SF12,                    \
+    .bw              = SX126X_LORA_BW_125,                  \
+    .cr              = SX126X_LORA_CR_4_5,                  \
+    .preamble_length = 8,                                   \
+    .header_explicit = true,                                \
+    .payload_length  = 255,                                 \
+    .crc_on          = true,                                \
+    .invert_iq       = false                                \
+}
+
+// Function Declarations
+bool lora_init(const lora_config_t *config);
 bool lora_check_connection(void);
 
 #endif // LORA_H

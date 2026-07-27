@@ -37,11 +37,16 @@ void app_main(void) {
 
     xTaskCreate(&led_status_task, "led_task", 1024, NULL, 5, NULL);
 
-    // Initialize LoRa Hardware & Config
-    lora_init();
+    ESP_LOGI(TAG, "Starting Gateway (Ra-01SH / SX1262)...");
 
-    // Verify Ra-01SH status via lora driver helper
-    if (lora_check_connection()) {
+    // Initialize LoRa with default struct parameters: 
+    // 915 MHz, SF12, BW 125 kHz, CR 4/5, +14 dBm power
+    lora_config_t lora_cfg = LORA_CONFIG_DEFAULT();
+
+    // Custom modifications can be done directly on the struct:
+    // lora_cfg.power_dbm = 22; // Boost power to +22 dBm
+
+    if (lora_init(&lora_cfg) && lora_check_connection()) {
         ESP_LOGI(TAG, "LoRa Gateway initialization complete.");
     } else {
         ESP_LOGE(TAG, "LoRa Gateway initialization failed.");

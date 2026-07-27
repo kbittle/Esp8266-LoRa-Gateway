@@ -12,6 +12,7 @@ Esp8266-LoRa-Gateway/
 ├── docs/                    # Datasheets, schematics, and reference manuals
 ├── esp-gateway-project/     # ESP8266 Project
 |    ├── build               # Build output folder
+|    ├── SWSD003             # Semtechs sx126x github library
 |    └── main                # Source files
 └── gerbers/                 # PCB Fab files
 ```

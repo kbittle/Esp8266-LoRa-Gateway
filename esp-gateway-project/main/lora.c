@@ -17,7 +17,7 @@ static void lora_wait_busy(void) {
 }
 
 // -----------------------------------------------------------------------------
-// SWSD003 HAL Implementations
+// SWSD003 Low-Level HAL Functions
 // -----------------------------------------------------------------------------
 sx126x_hal_status_t sx126x_hal_write(const void* context, const uint8_t* command, 
                                      const uint16_t command_length, const uint8_t* data, 
@@ -66,10 +66,15 @@ sx126x_hal_status_t sx126x_hal_read(const void* context, const uint8_t* command,
 }
 
 // -----------------------------------------------------------------------------
-// High-Level Driver API
+// Driver Initialization & Configuration
 // -----------------------------------------------------------------------------
-void lora_init(void) {
-    // 1. Configure NSS & Reset GPIOs
+bool lora_init(const lora_config_t *config) {
+    if (config == NULL) {
+        ESP_LOGE(TAG, "Configuration struct is NULL.");
+        return false;
+    }
+
+    // 1. Configure Hardware GPIOs
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << LORA_NSS_GPIO) | (1ULL << LORA_RST_GPIO),
         .mode = GPIO_MODE_OUTPUT,
@@ -79,7 +84,6 @@ void lora_init(void) {
     };
     gpio_config(&io_conf);
 
-    // 2. Configure BUSY GPIO
     gpio_config_t busy_conf = {
         .pin_bit_mask = (1ULL << LORA_BUSY_GPIO),
         .mode = GPIO_MODE_INPUT,
@@ -91,13 +95,13 @@ void lora_init(void) {
 
     gpio_set_level(LORA_NSS_GPIO, 1);
 
-    // 3. Hardware Reset Sequence
+    // 2. Perform Hardware Reset Sequence
     gpio_set_level(LORA_RST_GPIO, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(LORA_RST_GPIO, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // 4. Initialize Hardware SPI
+    // 3. Initialize SPI Bus
     spi_config_t spi_conf = {
         .interface = { .cs_en = 0 },
         .clk_div = SPI_2MHz_DIV,
@@ -106,22 +110,72 @@ void lora_init(void) {
 
     lora_wait_busy();
 
-    // 5. Apply Ra-01SH Specific Configuration via SWSD003
-    sx126x_set_reg_mode(NULL, SX126X_REG_MODE_LDO);   // Ra-01SH uses LDO mode
-    sx126x_set_dio2_as_rf_sw_ctrl(NULL, true);         // Ra-01SH uses DIO2 for internal RF switch
+    // 4. Set Standby Mode (STDBY_RC)
+    if (sx126x_set_standby(NULL, SX126X_STANDBY_CFG_RC) != SX126X_STATUS_OK) {
+        ESP_LOGE(TAG, "Failed to put SX1262 into standby mode.");
+        return false;
+    }
 
-    ESP_LOGI(TAG, "Ra-01SH (SX1262) hardware & SWSD003 initialized.");
+    // 5. Ra-01SH Module Specifics: Set LDO Mode and RF Switch Control
+    sx126x_set_reg_mode(NULL, SX126X_REG_MODE_LDO);
+    sx126x_set_dio2_as_rf_sw_ctrl(NULL, true);
+
+    // 6. Set Radio to LoRa Packet Type
+    sx126x_set_pkt_type(NULL, SX126X_PKT_TYPE_LORA);
+
+    // 7. Set RF Frequency (e.g. 915 MHz)
+    sx126x_set_rf_freq(NULL, config->frequency_hz);
+
+    // 8. Configure Power Amplifier (PA) & Tx Output Power for SX1262 (+22 dBm max chip)
+    // Duty cycle = 0x04, hp_max = 0x07, device_sel = 0x00 (SX1262), pa_lut = 0x01
+    sx126x_pa_cfg_params_t pa_cfg = {
+        .pa_duty_cycle = 0x04,
+        .hp_max        = 0x07,
+        .device_sel    = 0x00,
+        .pa_lut        = 0x01
+    };
+    sx126x_set_pa_cfg(NULL, &pa_cfg);
+    sx126x_set_tx_params(NULL, config->power_dbm, SX126X_RAMP_20_US);
+
+    // 9. Configure Modulation Parameters (SF12, BW125, CR4/5, Low Data Rate Optimization)
+    // Note: LDRO (Low Data Rate Optimization) must be enabled for SF11/SF12 with 125kHz BW
+    bool ldro_enable = (config->sf == SX126X_LORA_SF11 || config->sf == SX126X_LORA_SF12) && 
+                       (config->bw == SX126X_LORA_BW_125);
+
+    sx126x_mod_params_lora_t mod_params = {
+        .sf   = config->sf,
+        .bw   = config->bw,
+        .cr   = config->cr,
+        .ldro = ldro_enable ? 1 : 0
+    };
+    sx126x_set_lora_mod_params(NULL, &mod_params);
+
+    // 10. Configure Packet Parameters
+    sx126x_pkt_params_lora_t pkt_params = {
+        .preamble_len_in_symb = config->preamble_length,
+        .header_type          = config->header_explicit ? SX126X_LORA_PKT_EXPLICIT : SX126X_LORA_PKT_IMPLICIT,
+        .pld_len_in_bytes     = config->payload_length,
+        .crc_is_on            = config->crc_on,
+        .invert_iq_is_on      = config->invert_iq
+    };
+    sx126x_set_lora_pkt_params(NULL, &pkt_params);
+
+    // 11. Set LoRa Sync Word (0x1424 = Public Network / LoRaWAN, 0x12 = Private Network default)
+    sx126x_set_lora_sync_word(NULL, 0x12);
+
+    ESP_LOGI(TAG, "Ra-01SH configured: Freq=%d Hz, Power=%d dBm, SF=%d, BW=%d, CR=%d",
+             config->frequency_hz, config->power_dbm, config->sf, config->bw, config->cr);
+
+    return true;
 }
 
 bool lora_check_connection(void) {
     sx126x_chip_status_t status;
-    
     if (sx126x_get_status(NULL, &status) == SX126X_STATUS_OK) {
-        ESP_LOGI(TAG, "Ra-01SH online! Mode: 0x%02X, Cmd Status: 0x%02X", 
+        ESP_LOGI(TAG, "Ra-01SH status check OK! Mode: 0x%02X, Cmd Status: 0x%02X", 
                  status.chip_mode, status.cmd_status);
         return true;
     }
-    
-    ESP_LOGE(TAG, "Communication failure with Ra-01SH module.");
+    ESP_LOGE(TAG, "Failed communication with Ra-01SH module.");
     return false;
 }
