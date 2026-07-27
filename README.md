@@ -18,7 +18,7 @@ Esp8266-LoRa-Gateway/
 
 ## 🔌 Hardware Pinout
 
-The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01 LoRa Module** (SX1278), and an **SK9822 RGB LED** indicator.
+The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01SH LoRa Module** (SX1262), and an **SK9822 RGB LED** indicator.
 
 ### 📡 Ra-01 LoRa Module (SPI)
 

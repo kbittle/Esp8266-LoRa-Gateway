@@ -1,0 +1,3 @@
+[submodule "esp-gateway-project/SWSD003"]
+	path = esp-gateway-project/SWSD003
+	url = https://github.com/Lora-net/SWSD003.git

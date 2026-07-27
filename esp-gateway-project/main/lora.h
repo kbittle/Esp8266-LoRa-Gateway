@@ -2,18 +2,18 @@
 #define LORA_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "driver/gpio.h"
 #include "driver/spi.h"
 
-// Pin Definitions
-#define LORA_RST_GPIO  GPIO_NUM_4
-#define LORA_NSS_GPIO  GPIO_NUM_5
+// Hardware Pin Definitions for Ra-01SH (ESP8266/ESP32)
+#define LORA_RST_GPIO   GPIO_NUM_4
+#define LORA_NSS_GPIO   GPIO_NUM_5
+#define LORA_BUSY_GPIO  GPIO_NUM_16
+#define LORA_DIO1_GPIO  GPIO_NUM_15
 
-// SX1278 Registers
-#define REG_VERSION    0x42
-
+// High-level driver functions
 void lora_init(void);
-uint8_t lora_read_reg(uint8_t reg);
-void lora_write_reg(uint8_t reg, uint8_t value);
+bool lora_check_connection(void);
 
 #endif // LORA_H
