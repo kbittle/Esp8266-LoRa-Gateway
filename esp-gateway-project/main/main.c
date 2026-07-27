@@ -10,6 +10,7 @@
 // Application module drivers
 #include "sk9822.h"
 #include "lora.h"
+#include "webserver.h"
 
 static const char *TAG = "gateway_main";
 
@@ -36,6 +37,10 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "Starting Gateway...");
 
+    // Start Wi-Fi AP & Webserver
+    wifi_init_softap();
+    start_webserver();
+
     xTaskCreate(&led_status_task, "led_task", 1024, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Starting Gateway (Ra-01SH / SX1262)...");
@@ -58,7 +63,7 @@ void app_main(void) {
     lora_send_packet((const uint8_t*)msg, strlen(msg), 3000);
 
     // --- Receive Packet Example ---
-    uint8_t rx_buf[256] = {0};
+    uint8_t rx_buf[255] = {0};
     uint8_t rx_len = 0;
     
     // Listen for 5 seconds
