@@ -1,3 +1,6 @@
-idf_component_register(SRCS "main.c" "sk9822.c" "lora.c"
-                       INCLUDE_DIRS ".")
-                       
+idf_component_register(
+    SRCS "main.c" "lora.c" "sk9822.c"
+    INCLUDE_DIRS "." 
+                 "../SWSD003/sx126x/sx126x_driver/src" # Core SX1262 driver headers
+                 "../SWSD003/common/inc"               # Common SWSD003 headers
+)

@@ -12,13 +12,14 @@ Esp8266-LoRa-Gateway/
 ├── docs/                    # Datasheets, schematics, and reference manuals
 ├── esp-gateway-project/     # ESP8266 Project
 |    ├── build               # Build output folder
+|    ├── SWSD003             # Semtechs sx126x github library
 |    └── main                # Source files
 └── gerbers/                 # PCB Fab files
 ```
 
 ## 🔌 Hardware Pinout
 
-The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01 LoRa Module** (SX1278), and an **SK9822 RGB LED** indicator.
+The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01SH LoRa Module** (SX1262), and an **SK9822 RGB LED** indicator.
 
 ### 📡 Ra-01 LoRa Module (SPI)
 
@@ -40,4 +41,5 @@ The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01 LoRa Module** (SX1278), a
 ## 📖 Developer Guides
 
 * **💻 [SW Dev Environment Setup](docs/build-instructions.md)** — Build instructions
+* **⚡ [FW Loading Instructions](docs/flash-instructions.md)** — Firmware Loading instructions
 
