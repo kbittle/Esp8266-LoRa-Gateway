@@ -51,4 +51,27 @@ typedef struct {
 bool lora_init(const lora_config_t *config);
 bool lora_check_connection(void);
 
+/**
+ * @brief Transmit a packet over LoRa (blocking until timeout or completion)
+ * 
+ * @param data Pointer to byte buffer to send
+ * @param length Length of data payload
+ * @param timeout_ms Timeout in milliseconds to wait for TX completion
+ * @return true Transmit successful
+ * @return false Transmit failed or timed out
+ */
+bool lora_send_packet(const uint8_t *data, uint8_t length, uint32_t timeout_ms);
+
+/**
+ * @brief Receive a LoRa packet (blocking wait)
+ * 
+ * @param buffer Buffer to fill with received data
+ * @param max_length Maximum bytes the destination buffer can accept
+ * @param rx_length Pointer to store actual bytes received
+ * @param timeout_ms Max time to wait in ms (0 = non-blocking continuous listen check)
+ * @return true Packet received successfully
+ * @return false Timeout or error
+ */
+bool lora_receive_packet(uint8_t *buffer, uint8_t max_length, uint8_t *rx_length, uint32_t timeout_ms);
+
 #endif // LORA_H

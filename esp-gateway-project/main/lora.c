@@ -179,3 +179,95 @@ bool lora_check_connection(void) {
     ESP_LOGE(TAG, "Failed communication with Ra-01SH module.");
     return false;
 }
+
+// -----------------------------------------------------------------------------
+// Read / Write Packet API
+// -----------------------------------------------------------------------------
+bool lora_send_packet(const uint8_t *data, uint8_t length, uint32_t timeout_ms) {
+    if (data == NULL || length == 0) return false;
+
+    // Clear IRQ flags
+    sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
+
+    // Write payload into chip FIFO at buffer offset 0x00
+    if (sx126x_write_buffer(NULL, 0x00, data, length) != SX126X_STATUS_OK) {
+        ESP_LOGE(TAG, "Failed to write payload to SX1262 buffer.");
+        return false;
+    }
+
+    // Set Tx mode (Timeout = 0 means wait indefinitely in hardware until transmit finishes)
+    if (sx126x_set_tx(NULL, 0) != SX126X_STATUS_OK) {
+        ESP_LOGE(TAG, "Failed to put radio in TX mode.");
+        return false;
+    }
+
+    // Poll until TxDone IRQ status flag is set or timeout occurs
+    uint32_t elapsed = 0;
+    while (elapsed < timeout_ms) {
+        sx126x_irq_mask_t irq_status;
+        sx126x_get_irq_status(NULL, &irq_status);
+
+        if (irq_status & SX126X_IRQ_TX_DONE) {
+            sx126x_clear_irq_status(NULL, SX126X_IRQ_TX_DONE);
+            ESP_LOGI(TAG, "Packet sent successfully (%d bytes).", length);
+            return true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+        elapsed += 10;
+    }
+
+    ESP_LOGE(TAG, "TX timeout expired!");
+    sx126x_set_standby(NULL, SX126X_STANDBY_CFG_RC); // Reset radio state
+    return false;
+}
+
+bool lora_receive_packet(uint8_t *buffer, uint8_t max_length, uint8_t *rx_length, uint32_t timeout_ms) {
+    if (buffer == NULL || rx_length == NULL) return false;
+
+    sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
+
+    // Put radio in continuous RX mode (Timeout parameter 0xFFFFFF)
+    if (sx126x_set_rx(NULL, 0xFFFFFF) != SX126X_STATUS_OK) {
+        ESP_LOGE(TAG, "Failed to set RX mode.");
+        return false;
+    }
+
+    uint32_t elapsed = 0;
+    while (elapsed <= timeout_ms) {
+        sx126x_irq_mask_t irq_status;
+        sx126x_get_irq_status(NULL, &irq_status);
+
+        if (irq_status & SX126X_IRQ_RX_DONE) {
+            if (irq_status & SX126X_IRQ_CRC_ERROR) {
+                ESP_LOGE(TAG, "Received packet CRC error!");
+                sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
+                return false;
+            }
+
+            // Get received payload info
+            sx126x_rx_buffer_status_t rx_buffer_status;
+            sx126x_get_rx_buffer_status(NULL, &rx_buffer_status);
+
+            uint8_t bytes_to_read = rx_buffer_status.pld_len_in_bytes;
+            if (bytes_to_read > max_length) {
+                bytes_to_read = max_length;
+            }
+
+            // Read payload from chip internal buffer
+            sx126x_read_buffer(NULL, rx_buffer_status.buffer_start_pointer, buffer, bytes_to_read);
+            *rx_length = bytes_to_read;
+
+            sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
+            ESP_LOGI(TAG, "Received packet (%d bytes).", bytes_to_read);
+            return true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+        elapsed += 10;
+    }
+
+    // Standby radio if timeout expired with no packet
+    sx126x_set_standby(NULL, SX126X_STANDBY_CFG_RC);
+    return false;
+}

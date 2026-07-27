@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_wifi.h"
@@ -50,6 +51,22 @@ void app_main(void) {
         ESP_LOGI(TAG, "LoRa Gateway initialization complete.");
     } else {
         ESP_LOGE(TAG, "LoRa Gateway initialization failed.");
+    }
+
+    // --- Transmit Packet Example ---
+    const char *msg = "Hello World!";
+    lora_send_packet((const uint8_t*)msg, strlen(msg), 3000);
+
+    // --- Receive Packet Example ---
+    uint8_t rx_buf[256] = {0};
+    uint8_t rx_len = 0;
+    
+    // Listen for 5 seconds
+    if (lora_receive_packet(rx_buf, sizeof(rx_buf), &rx_len, 5000)) {
+        rx_buf[rx_len] = '\0'; // Null-terminate if text string
+        ESP_LOGI(TAG, "Payload: %s", (char*)rx_buf);
+    } else {
+        ESP_LOGI(TAG, "No packet received within 5s window.");
     }
 
     while (1) {
