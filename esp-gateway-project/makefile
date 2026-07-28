@@ -5,3 +5,8 @@ GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || echo "nogit")
 PROJECT_NAME := esp-gateway-project-$(GIT_HASH)
 
 include $(IDF_PATH)/make/project.mk
+
+# Override the clean target to wipe the entire build directory
+clean:
+	@echo "Removing build directory..."
+	rm -rf $(BUILD_DIR_BASE)
