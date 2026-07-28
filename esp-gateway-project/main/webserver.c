@@ -5,318 +5,337 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "tcpip_adapter.h"
+#include "esp_system.h"
+#include "esp_timer.h"
+
+/* Compatibility definition for ESP8266_RTOS_SDK */
+#ifndef HTTPD_RESP_USE_STRLEN
+#define HTTPD_RESP_USE_STRLEN -1
+#endif
 
 static const char *TAG = "webserver";
 
 /* -------------------------------------------------------------------------- */
-/*                          Gateway Configuration State                       */
+/*                            In-RAM Gateway State                            */
 /* -------------------------------------------------------------------------- */
 
-typedef struct {
-    int frequency; /* MHz */
-    int power;     /* dBm */
-    int sf;        /* Spreading factor */
-} gateway_config_t;
-
-#define FREQ_MIN 137
-#define FREQ_MAX 1020
-#define POWER_MIN 2
-#define POWER_MAX 20
-#define SF_MIN 7
-#define SF_MAX 12
-
-static gateway_config_t current_config = {
+lora_config_t_fix g_lora_cfg = {
     .frequency = 915,
     .power = 14,
     .sf = 12
 };
 
+mqtt_config_t g_mqtt_cfg = {
+    .broker = "192.168.1.100",
+    .port = 1883,
+    .client_id = "lora_gateway_01",
+    .topic_prefix = "lora/gateway",
+    .connected = false
+};
+
+wifi_config_state_t g_wifi_cfg = {
+    .sta_ssid = "",
+    .sta_password = "",
+    .sta_connected = false,
+    .ip_addr = "0.0.0.0"
+};
+
+gateway_stats_t g_stats = {
+    .lora_rx_count = 0,
+    .lora_tx_count = 0,
+    .mqtt_pub_count = 0
+};
+
+/* In-RAM Log Buffer */
+#define LOG_MAX_ENTRIES 10
+#define LOG_ENTRY_LEN 128
+static char g_logs[LOG_MAX_ENTRIES][LOG_ENTRY_LEN] = {0};
+static int g_log_head = 0;
+
+void app_log_add(const char *msg) {
+    if (!msg) return;
+    
+    // Safely cast 64-bit microsecond timer to 32-bit second uptime
+    uint32_t uptime_sec = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+
+    snprintf(g_logs[g_log_head], LOG_ENTRY_LEN, "[%lu] %s", 
+             (unsigned long)uptime_sec, msg);
+
+    g_log_head = (g_log_head + 1) % LOG_MAX_ENTRIES;
+}
+
 /* -------------------------------------------------------------------------- */
-/*                               HTML Templates                               */
+/*                               HTML Static Chunks                           */
 /* -------------------------------------------------------------------------- */
 
-/* Shared look and feel for both pages. Kept as its own literal so it isn't
- * duplicated (and so it isn't part of any snprintf format string). */
-static const char page_style[] =
-"  <style>"
-"    * { box-sizing: border-box; }"
-"    body {"
-"      font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"
-"      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;"
-"      background: linear-gradient(135deg, #4facfe 0%, #7367f0 55%, #6a3df0 100%);"
-"      padding: 24px;"
-"    }"
-"    .card {"
-"      background: #ffffff; padding: 32px 28px; border-radius: 18px; max-width: 400px; width: 100%;"
-"      box-shadow: 0 20px 40px rgba(30, 20, 90, 0.25);"
-"    }"
-"    h2 {"
-"      color: #2b2450; text-align: center; margin: 0 0 22px; font-size: 22px; letter-spacing: 0.3px;"
-"    }"
-"    label {"
-"      display: flex; align-items: center; gap: 6px; margin-top: 16px; font-weight: 600; font-size: 14px; color: #3d3763;"
-"    }"
-"    input, select {"
-"      width: 100%; padding: 10px 12px; margin-top: 6px; border-radius: 8px;"
-"      border: 1.5px solid #dcd9f0; font-size: 15px; background: #faf9ff; transition: border-color .15s, box-shadow .15s;"
-"    }"
-"    input:focus, select:focus {"
-"      outline: none; border-color: #7367f0; box-shadow: 0 0 0 3px rgba(115, 103, 240, 0.18);"
-"    }"
-"    small { display: block; margin-top: 4px; color: #918dab; font-size: 12px; }"
-"    button {"
-"      background: linear-gradient(135deg, #7367f0, #4facfe); color: white; border: none; padding: 12px;"
-"      margin-top: 26px; width: 100%; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: 600;"
-"      letter-spacing: 0.3px; transition: transform .12s, box-shadow .12s;"
-"    }"
-"    button:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(115, 103, 240, 0.35); }"
-"    button:active { transform: translateY(0); }"
-"    .banner {"
-"      background: #e6f8ee; color: #1c8a53; border: 1px solid #b9ecd0; padding: 10px 12px; border-radius: 8px;"
-"      margin-bottom: 18px; text-align: center; font-size: 14px; font-weight: 600;"
-"    }"
-"    .error-card h2 { color: #c0392b; }"
-"    .error-card p { color: #5b5578; text-align: center; font-size: 14px; line-height: 1.5; }"
-"    .error-card a {"
-"      display: block; text-align: center; margin-top: 20px; color: #7367f0; font-weight: 600; text-decoration: none;"
-"    }"
-"    .error-card a:hover { text-decoration: underline; }"
-"  </style>";
+static const char page_head[] =
+"<!DOCTYPE html><html><head>"
+"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+"<style>"
+"  * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }"
+"  body { margin: 0; padding: 20px; background: #1a1a2e; color: #e0e0e0; }"
+"  .container { max-width: 900px; margin: 0 auto; }"
+"  h1 { text-align: center; color: #00fff5; margin-bottom: 20px; }"
+"  .card { background: #16213e; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }"
+"  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }"
+"  .stat-box { background: #0f3460; padding: 15px; border-radius: 8px; text-align: center; }"
+"  .stat-box h3 { margin: 0; font-size: 14px; color: #00fff5; }"
+"  .stat-box p { margin: 5px 0 0; font-size: 20px; font-weight: bold; }"
+"  .tabs { display: flex; margin-bottom: 15px; border-bottom: 2px solid #0f3460; }"
+"  .tab-btn { padding: 10px 20px; background: none; border: none; color: #888; cursor: pointer; font-size: 16px; font-weight: bold; }"
+"  .tab-btn.active { color: #00fff5; border-bottom: 3px solid #00fff5; }"
+"  .tab-content { display: none; }"
+"  .tab-content.active { display: block; }"
+"  label { display: block; margin-top: 10px; color: #00fff5; font-size: 14px; }"
+"  input, select { width: 100%; padding: 8px; margin-top: 5px; border-radius: 5px; border: 1px solid #0f3460; background: #0f3460; color: #fff; }"
+"  button.submit-btn { background: #00fff5; color: #16213e; border: none; padding: 10px 15px; margin-top: 15px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%; }"
+"  .logs { background: #000; color: #00ff00; padding: 10px; font-family: monospace; border-radius: 5px; height: 150px; overflow-y: auto; white-space: pre-wrap; }"
+"</style>"
+"<script>"
+"function openTab(evt, tabName) {"
+"  var i, tc, tb;"
+"  tc = document.getElementsByClassName('tab-content');"
+"  for (i = 0; i < tc.length; i++) tc[i].style.display = 'none';"
+"  tb = document.getElementsByClassName('tab-btn');"
+"  for (i = 0; i < tb.length; i++) tb[i].className = tb[i].className.replace(' active', '');"
+"  document.getElementById(tabName).style.display = 'block';"
+"  evt.currentTarget.className += ' active';"
+"}"
+"</script>"
+"</head><body>"
+"<div class=\"container\">"
+"  <h1>LoRa to MQTT Gateway</h1>";
 
-/* %s = banner/success message, then %d = frequency, %d = power, then 6x %s
- * for the SF <option> "selected" markers */
-static const char config_page_template[] =
-"<!DOCTYPE html>"
-"<html>"
-"<head>"
-"  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-"  <link rel=\"icon\" href=\"data:,\">"
-"  <title>ESP8266 Gateway Configuration</title>"
-"%s"
-"</head>"
-"<body>"
+static const char tabs_header[] =
+"  <div class=\"tabs\">"
+"    <button class=\"tab-btn active\" onclick=\"openTab(event, 'Lora')\">LoRa Config</button>"
+"    <button class=\"tab-btn\" onclick=\"openTab(event, 'Mqtt')\">MQTT Config</button>"
+"    <button class=\"tab-btn\" onclick=\"openTab(event, 'Wifi')\">Wi-Fi Config</button>"
+"  </div>"
+"  <div class=\"card\">";
+
+static const char logs_header[] =
+"  </div>"
 "  <div class=\"card\">"
-"    <h2>&#128225; Gateway Configuration</h2>"
-"    %s"
-"    <form action=\"/save\" method=\"POST\">"
-"      <label for=\"frequency\">&#128246; LoRa Frequency (MHz)</label>"
-"      <input type=\"number\" id=\"frequency\" name=\"frequency\" value=\"%d\" min=\"%d\" max=\"%d\" required>"
-"      <small>Allowed range: %d&ndash;%d MHz</small>"
-"      <label for=\"power\">&#9889; Tx Power (dBm)</label>"
-"      <input type=\"number\" id=\"power\" name=\"power\" value=\"%d\" min=\"%d\" max=\"%d\" required>"
-"      <small>Allowed range: %d&ndash;%d dBm</small>"
-"      <label for=\"sf\">&#128257; Spreading Factor</label>"
-"      <select id=\"sf\" name=\"sf\">"
-"        <option value=\"7\" %s>SF7</option>"
-"        <option value=\"8\" %s>SF8</option>"
-"        <option value=\"9\" %s>SF9</option>"
-"        <option value=\"10\" %s>SF10</option>"
-"        <option value=\"11\" %s>SF11</option>"
-"        <option value=\"12\" %s>SF12</option>"
-"      </select>"
-"      <button type=\"submit\">Save Settings</button>"
-"    </form>"
+"    <h3>System Logs</h3>"
+"    <div class=\"logs\">";
+
+static const char page_footer[] =
+"</div>"
 "  </div>"
-"</body>"
-"</html>";
-
-/* %s = style block, %s = error message */
-static const char error_page_template[] =
-"<!DOCTYPE html>"
-"<html>"
-"<head>"
-"  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-"  <link rel=\"icon\" href=\"data:,\">"
-"  <title>Configuration Error</title>"
-"%s"
-"</head>"
-"<body>"
-"  <div class=\"card error-card\">"
-"    <h2>&#9888; Invalid Configuration</h2>"
-"    <p>%s</p>"
-"    <a href=\"/\">&larr; Go Back</a>"
-"  </div>"
-"</body>"
-"</html>";
+"</div>"
+"</body></html>";
 
 /* -------------------------------------------------------------------------- */
-/*                               Helper Functions                             */
-/* -------------------------------------------------------------------------- */
-
-/* Extracts an integer value for "key=" out of a x-www-form-urlencoded body.
- * Returns 0 on success and writes the value to *out, -1 if the key is missing
- * or has no parseable integer after it. */
-static int parse_form_int(const char *body, const char *key, int *out) {
-    char needle[24];
-    snprintf(needle, sizeof(needle), "%s=", key);
-
-    const char *pos = strstr(body, needle);
-    if (pos == NULL) {
-        return -1;
-    }
-    pos += strlen(needle);
-
-    if (*pos == '\0' || (*pos != '-' && (*pos < '0' || *pos > '9'))) {
-        return -1;
-    }
-
-    *out = atoi(pos);
-    return 0;
-}
-
-/* Builds the config page into a freshly malloc'd buffer reflecting the
- * currently active configuration. Caller must free() the result. */
-static char *build_config_page(const gateway_config_t *cfg, const char *banner) {
-    size_t buf_size = sizeof(config_page_template) + sizeof(page_style)
-        + strlen(banner) + 256;
-    char *page = malloc(buf_size);
-    if (page == NULL) {
-        return NULL;
-    }
-
-    snprintf(page, buf_size, config_page_template,
-        page_style,
-        banner,
-        cfg->frequency, FREQ_MIN, FREQ_MAX, FREQ_MIN, FREQ_MAX,
-        cfg->power, POWER_MIN, POWER_MAX, POWER_MIN, POWER_MAX,
-        cfg->sf == 7  ? "selected" : "",
-        cfg->sf == 8  ? "selected" : "",
-        cfg->sf == 9  ? "selected" : "",
-        cfg->sf == 10 ? "selected" : "",
-        cfg->sf == 11 ? "selected" : "",
-        cfg->sf == 12 ? "selected" : "");
-
-    return page;
-}
-
-/* Builds the error page into a freshly malloc'd buffer sized to fit the
- * given message (avoids the fixed-buffer format-truncation warning that
- * comes from hand-sizing a stack buffer for a variable-length message).
- * Caller must free() the result. */
-static char *build_error_page(const char *message) {
-    size_t buf_size = sizeof(error_page_template) + sizeof(page_style)
-        + strlen(message) + 64;
-    char *page = malloc(buf_size);
-    if (page == NULL) {
-        return NULL;
-    }
-
-    snprintf(page, buf_size, error_page_template, page_style, message);
-    return page;
-}
-
-/* -------------------------------------------------------------------------- */
-/*                            HTTP URI Handlers                               */
+/*                       Safe HTTP Chunked Generator                          */
 /* -------------------------------------------------------------------------- */
 
 static esp_err_t root_get_handler(httpd_req_t *req) {
-    char *page = build_config_page(&current_config, "");
-    if (page == NULL) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
+    static char buf[256];
 
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, page, strlen(page));
-    free(page);
-    return ESP_OK;
-}
 
-static esp_err_t save_post_handler(httpd_req_t *req) {
-    char buf[100];
-    int remaining = req->content_len;
+    // 1. Send Head & CSS
+    httpd_resp_send_chunk(req, page_head, HTTPD_RESP_USE_STRLEN);
 
-    if (remaining <= 0 || remaining >= (int)sizeof(buf)) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
+    // 2. Send System Health & Statistics Cards
+    httpd_resp_send_chunk(req, "<div class=\"card\"><div class=\"grid\">", HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>System Uptime</h3><p>%llds</p></div>",
+             (long long)(esp_timer_get_time() / 1000000));
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>Free Heap</h3><p>%u KB</p></div>",
+             (unsigned int)(esp_get_free_heap_size() / 1024));
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>Wi-Fi Mode</h3><p>%s</p></div>",
+             g_wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>MQTT Status</h3><p>%s</p></div>",
+             g_mqtt_cfg.connected ? "Connected" : "Disconnected");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa Rx / Tx</h3><p>%u / %u</p></div>",
+             (unsigned int)g_stats.lora_rx_count, (unsigned int)g_stats.lora_tx_count);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>MQTT Published</h3><p>%u</p></div>",
+             (unsigned int)g_stats.mqtt_pub_count);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    httpd_resp_send_chunk(req, "</div></div>", HTTPD_RESP_USE_STRLEN);
+
+    // 3. Send Tab Buttons
+    httpd_resp_send_chunk(req, tabs_header, HTTPD_RESP_USE_STRLEN);
+
+    // 4. Send LoRa Tab
+    httpd_resp_send_chunk(req, "<div id=\"Lora\" class=\"tab-content active\"><form action=\"/save_lora\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<label>Frequency (MHz)</label><input type=\"number\" name=\"frequency\" value=\"%d\">", g_lora_cfg.frequency);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<label>Tx Power (dBm)</label><input type=\"number\" name=\"power\" value=\"%d\">", g_lora_cfg.power);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    httpd_resp_send_chunk(req, "<label>Spreading Factor</label><select name=\"sf\">", HTTPD_RESP_USE_STRLEN);
+
+    for (int sf = 7; sf <= 12; sf++) {
+        snprintf(buf, sizeof(buf), "<option value=\"%d\" %s>SF%d</option>",
+                 sf, (g_lora_cfg.sf == sf) ? "selected" : "", sf);
+        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     }
 
-    int received = 0;
-    while (received < remaining) {
-        int ret = httpd_req_recv(req, buf + received, remaining - received);
-        if (ret <= 0) {
-            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                httpd_resp_send_408(req);
-            }
-            return ESP_FAIL;
+    httpd_resp_send_chunk(req, "</select><button type=\"submit\" class=\"submit-btn\">Save LoRa Settings</button></form></div>", HTTPD_RESP_USE_STRLEN);
+
+    // 5. Send MQTT Tab
+    httpd_resp_send_chunk(req, "<div id=\"Mqtt\" class=\"tab-content\"><form action=\"/save_mqtt\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<label>Broker Address</label><input type=\"text\" name=\"broker\" value=\"%s\">",
+             g_mqtt_cfg.broker[0] ? g_mqtt_cfg.broker : "");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<label>Port</label><input type=\"number\" name=\"port\" value=\"%d\">", g_mqtt_cfg.port);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<label>Client ID</label><input type=\"text\" name=\"client_id\" value=\"%s\">",
+             g_mqtt_cfg.client_id[0] ? g_mqtt_cfg.client_id : "");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<label>Topic Prefix</label><input type=\"text\" name=\"topic_prefix\" value=\"%s\">",
+             g_mqtt_cfg.topic_prefix[0] ? g_mqtt_cfg.topic_prefix : "");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    httpd_resp_send_chunk(req, "<button type=\"submit\" class=\"submit-btn\">Save MQTT Settings</button></form></div>", HTTPD_RESP_USE_STRLEN);
+
+    // 6. Send Wi-Fi Tab
+    httpd_resp_send_chunk(req, "<div id=\"Wifi\" class=\"tab-content\"><form action=\"/save_wifi\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<label>Station SSID</label><input type=\"text\" name=\"ssid\" value=\"%s\">",
+             g_wifi_cfg.sta_ssid[0] ? g_wifi_cfg.sta_ssid : "");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<label>Station Password</label><input type=\"password\" name=\"password\" value=\"%s\">",
+             g_wifi_cfg.sta_password[0] ? g_wifi_cfg.sta_password : "");
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    httpd_resp_send_chunk(req, "<button type=\"submit\" class=\"submit-btn\">Connect Wi-Fi</button></form></div>", HTTPD_RESP_USE_STRLEN);
+
+    // 7. Send Log Section Header
+    httpd_resp_send_chunk(req, logs_header, HTTPD_RESP_USE_STRLEN);
+
+    // 8. Stream In-RAM Logs
+    bool empty = true;
+    int idx = g_log_head;
+    for (int i = 0; i < LOG_MAX_ENTRIES; i++) {
+        if (g_logs[idx][0] != '\0') {
+            httpd_resp_send_chunk(req, g_logs[idx], HTTPD_RESP_USE_STRLEN);
+            httpd_resp_send_chunk(req, "\n", 1);
+            empty = false;
         }
-        received += ret;
+        idx = (idx + 1) % LOG_MAX_ENTRIES;
     }
-    buf[received] = '\0';
-
-    ESP_LOGI(TAG, "Received POST data: %s", buf);
-
-    int frequency, power, sf;
-    if (parse_form_int(buf, "frequency", &frequency) != 0 ||
-        parse_form_int(buf, "power", &power) != 0 ||
-        parse_form_int(buf, "sf", &sf) != 0) {
-        char *page = build_error_page("Missing or malformed form fields.");
-        if (page == NULL) {
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
-        }
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_set_type(req, "text/html");
-        httpd_resp_send(req, page, strlen(page));
-        free(page);
-        return ESP_FAIL;
+    if (empty) {
+        httpd_resp_send_chunk(req, "System initialized.", HTTPD_RESP_USE_STRLEN);
     }
 
-    if (frequency < FREQ_MIN || frequency > FREQ_MAX ||
-        power < POWER_MIN || power > POWER_MAX ||
-        sf < SF_MIN || sf > SF_MAX) {
-        char err[160];
-        snprintf(err, sizeof(err),
-            "Values out of range. Frequency %d-%d MHz, power %d-%d dBm, SF %d-%d.",
-            FREQ_MIN, FREQ_MAX, POWER_MIN, POWER_MAX, SF_MIN, SF_MAX);
-        char *page = build_error_page(err);
-        if (page == NULL) {
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
-        }
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_set_type(req, "text/html");
-        httpd_resp_send(req, page, strlen(page));
-        free(page);
-        return ESP_FAIL;
-    }
+    // 9. Send Footer & End Response
+    httpd_resp_send_chunk(req, page_footer, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, NULL, 0);
 
-    /* Values are valid: commit them.
-     * NOTE: this only updates the in-RAM config. If you want settings to
-     * survive a reboot, persist current_config to NVS here. */
-    current_config.frequency = frequency;
-    current_config.power = power;
-    current_config.sf = sf;
-
-    ESP_LOGI(TAG, "Config updated: freq=%d power=%d sf=%d",
-        current_config.frequency, current_config.power, current_config.sf);
-
-    char *page = build_config_page(&current_config,
-        "<div class=\"banner\">Configuration saved successfully!</div>");
-    if (page == NULL) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, page, strlen(page));
-    free(page);
     return ESP_OK;
 }
 
 /* -------------------------------------------------------------------------- */
-/*                              Public Functions                              */
+/*                               Form Parsers                                 */
 /* -------------------------------------------------------------------------- */
 
-void wifi_init_softap(void) {
+static void parse_form_str(const char *body, const char *key, char *out, size_t max_len) {
+    if (!body || !key || !out) return;
+    char needle[32];
+    snprintf(needle, sizeof(needle), "%s=", key);
+    const char *pos = strstr(body, needle);
+    if (pos) {
+        pos += strlen(needle);
+        size_t i = 0;
+        while (*pos != '\0' && *pos != '&' && i < max_len - 1) {
+            out[i++] = *pos++;
+        }
+        out[i] = '\0';
+    }
+}
+
+static esp_err_t save_lora_handler(httpd_req_t *req) {
+    char buf[256] = {0};
+    if (httpd_req_recv(req, buf, sizeof(buf) - 1) <= 0) return ESP_FAIL;
+
+    if (strstr(buf, "frequency=")) sscanf(strstr(buf, "frequency="), "frequency=%d", &g_lora_cfg.frequency);
+    if (strstr(buf, "power="))     sscanf(strstr(buf, "power="), "power=%d", &g_lora_cfg.power);
+    if (strstr(buf, "sf="))        sscanf(strstr(buf, "sf="), "sf=%d", &g_lora_cfg.sf);
+
+    ESP_LOGI(TAG, "LoRa settings updated");
+    app_log_add("LoRa configuration updated.");
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t save_mqtt_handler(httpd_req_t *req) {
+    char buf[256] = {0};
+    if (httpd_req_recv(req, buf, sizeof(buf) - 1) <= 0) return ESP_FAIL;
+
+    parse_form_str(buf, "broker", g_mqtt_cfg.broker, sizeof(g_mqtt_cfg.broker));
+    parse_form_str(buf, "client_id", g_mqtt_cfg.client_id, sizeof(g_mqtt_cfg.client_id));
+    parse_form_str(buf, "topic_prefix", g_mqtt_cfg.topic_prefix, sizeof(g_mqtt_cfg.topic_prefix));
+
+    char port_str[8] = {0};
+    parse_form_str(buf, "port", port_str, sizeof(port_str));
+    if (port_str[0] != '\0') g_mqtt_cfg.port = atoi(port_str);
+
+    ESP_LOGI(TAG, "MQTT settings updated");
+    app_log_add("MQTT configuration updated.");
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t save_wifi_handler(httpd_req_t *req) {
+    char buf[256] = {0};
+    if (httpd_req_recv(req, buf, sizeof(buf) - 1) <= 0) return ESP_FAIL;
+
+    parse_form_str(buf, "ssid", g_wifi_cfg.sta_ssid, sizeof(g_wifi_cfg.sta_ssid));
+    parse_form_str(buf, "password", g_wifi_cfg.sta_password, sizeof(g_wifi_cfg.sta_password));
+
+    wifi_config_t sta_config = {0};
+    strncpy((char*)sta_config.sta.ssid, g_wifi_cfg.sta_ssid, sizeof(sta_config.sta.ssid));
+    strncpy((char*)sta_config.sta.password, g_wifi_cfg.sta_password, sizeof(sta_config.sta.password));
+
+    esp_wifi_set_config(WIFI_IF_STA, &sta_config);
+    esp_wifi_connect();
+
+    ESP_LOGI(TAG, "Wi-Fi station connecting...");
+    app_log_add("Connecting to Station Wi-Fi network...");
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Initialization                               */
+/* -------------------------------------------------------------------------- */
+
+void wifi_init_apsta(void) {
     tcpip_adapter_init();
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t wifi_config = {
+    wifi_config_t ap_config = {
         .ap = {
             .ssid = "ESP8266-Gateway-Config",
             .ssid_len = strlen("ESP8266-Gateway-Config"),
@@ -327,45 +346,39 @@ void wifi_init_softap(void) {
         },
     };
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Wi-Fi SoftAP initialized. SSID: ESP8266-Gateway-Config | Password: 12345678");
+    app_log_add("Wi-Fi APSTA initialized.");
 }
 
 httpd_handle_t start_webserver(void) {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.stack_size = 6144;
 
     if (httpd_start(&server, &config) == ESP_OK) {
-        httpd_uri_t root_uri = {
-            .uri      = "/",
-            .method   = HTTP_GET,
-            .handler  = root_get_handler,
-            .user_ctx = NULL
-        };
+        httpd_uri_t root_uri = { .uri = "/", .method = HTTP_GET, .handler = root_get_handler };
         httpd_register_uri_handler(server, &root_uri);
 
-        httpd_uri_t save_uri = {
-            .uri      = "/save",
-            .method   = HTTP_POST,
-            .handler  = save_post_handler,
-            .user_ctx = NULL
-        };
-        httpd_register_uri_handler(server, &save_uri);
+        httpd_uri_t lora_uri = { .uri = "/save_lora", .method = HTTP_POST, .handler = save_lora_handler };
+        httpd_register_uri_handler(server, &lora_uri);
 
-        ESP_LOGI(TAG, "Webserver started successfully.");
+        httpd_uri_t mqtt_uri = { .uri = "/save_mqtt", .method = HTTP_POST, .handler = save_mqtt_handler };
+        httpd_register_uri_handler(server, &mqtt_uri);
+
+        httpd_uri_t wifi_uri = { .uri = "/save_wifi", .method = HTTP_POST, .handler = save_wifi_handler };
+        httpd_register_uri_handler(server, &wifi_uri);
+
+        app_log_add("Webserver started.");
         return server;
     }
-
-    ESP_LOGE(TAG, "Error starting webserver!");
     return NULL;
 }
 
 void stop_webserver(httpd_handle_t server) {
     if (server) {
         httpd_stop(server);
-        ESP_LOGI(TAG, "Webserver stopped.");
     }
 }

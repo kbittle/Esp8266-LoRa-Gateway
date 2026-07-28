@@ -29,8 +29,10 @@ void led_status_task(void *pvParameters) {
 void network_init_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(500));
 
+    ESP_LOGI(TAG, "Starting webserver");
+
     // Initialize SoftAP & Webserver inside dedicated task context
-    wifi_init_softap();
+    wifi_init_apsta();
     start_webserver();
 
     // Delete task once initialization completes
@@ -38,7 +40,7 @@ void network_init_task(void *pvParameters) {
 }
 
 void lora_gateway_task(void *pvParameters) {
-    ESP_LOGI(TAG, "Starting LoRa Gateway (Ra-01SH / SX1262)...");
+    ESP_LOGI(TAG, "Starting LoRa Gateway (Ra-01SH / SX1262)");
 
     lora_config_t lora_cfg = LORA_CONFIG_DEFAULT();
 
