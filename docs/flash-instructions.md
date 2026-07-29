@@ -62,3 +62,26 @@ esptool.py -p /dev/ttyUSB0 -b 115200 write_flash \
   0x8000 partition-table.bin \
   0x10000 esp-gateway-project-<hash>.bin
 ```
+
+## ⚙️ WSL Share USB Port
+
+If you are trying to flash the esp from within WSL. You have to share the COM port.
+
+Open powershell as admin run: 
+
+```bash
+usbipd list
+Connected:
+BUSID  VID:PID    DEVICE                                                        STATE
+9-4    1a86:7523  USB-SERIAL CH340 (COM23)                                      Not shared
+```
+
+Now attach the device to WSL.
+
+`usbipd bind --busid 9-4`
+
+`usbipd attach --wsl --busid 9-4`
+
+To detach:
+
+`usbipd detach --busid <busid>`
