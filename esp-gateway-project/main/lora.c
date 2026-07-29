@@ -2,13 +2,13 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_log.h"
+#include "logger.h"
 
 // SWSD003 Library Headers
 #include "sx126x.h"
 #include "sx126x_hal.h"
 
-static const char *TAG = "ra01sh_driver";
+static const char *TAG = "lora_driver";
 
 static void lora_wait_busy(void) {
     while (gpio_get_level(LORA_BUSY_GPIO) == 1) {
@@ -70,7 +70,7 @@ sx126x_hal_status_t sx126x_hal_read(const void* context, const uint8_t* command,
 // -----------------------------------------------------------------------------
 bool lora_init(const lora_config_t *config) {
     if (config == NULL) {
-        ESP_LOGE(TAG, "Configuration struct is NULL.");
+        LOGE(TAG, "Configuration struct is NULL.");
         return false;
     }
 
@@ -112,7 +112,7 @@ bool lora_init(const lora_config_t *config) {
 
     // 4. Set Standby Mode (STDBY_RC)
     if (sx126x_set_standby(NULL, SX126X_STANDBY_CFG_RC) != SX126X_STATUS_OK) {
-        ESP_LOGE(TAG, "Failed to put SX1262 into standby mode.");
+        LOGE(TAG, "Failed to put SX1262 into standby mode.");
         return false;
     }
 
@@ -163,7 +163,7 @@ bool lora_init(const lora_config_t *config) {
     // 11. Set LoRa Sync Word (0x1424 = Public Network / LoRaWAN, 0x12 = Private Network default)
     sx126x_set_lora_sync_word(NULL, 0x12);
 
-    ESP_LOGI(TAG, "Ra-01SH configured: Freq=%d Hz, Power=%d dBm, SF=%d, BW=%d, CR=%d",
+    LOGI(TAG, "Ra-01SH configured: Freq=%d Hz, Power=%d dBm, SF=%d, BW=%d, CR=%d",
              config->frequency_hz, config->power_dbm, config->sf, config->bw, config->cr);
 
     return true;
@@ -172,11 +172,11 @@ bool lora_init(const lora_config_t *config) {
 bool lora_check_connection(void) {
     sx126x_chip_status_t status;
     if (sx126x_get_status(NULL, &status) == SX126X_STATUS_OK) {
-        ESP_LOGI(TAG, "Ra-01SH status check OK! Mode: 0x%02X, Cmd Status: 0x%02X", 
+        LOGI(TAG, "Ra-01SH status check OK! Mode: 0x%02X, Cmd Status: 0x%02X", 
                  status.chip_mode, status.cmd_status);
         return true;
     }
-    ESP_LOGE(TAG, "Failed communication with Ra-01SH module.");
+    LOGE(TAG, "Failed communication with Ra-01SH module.");
     return false;
 }
 
@@ -191,13 +191,13 @@ bool lora_send_packet(const uint8_t *data, uint8_t length, uint32_t timeout_ms) 
 
     // Write payload into chip FIFO at buffer offset 0x00
     if (sx126x_write_buffer(NULL, 0x00, data, length) != SX126X_STATUS_OK) {
-        ESP_LOGE(TAG, "Failed to write payload to SX1262 buffer.");
+        LOGE(TAG, "Failed to write payload to SX1262 buffer.");
         return false;
     }
 
     // Set Tx mode (Timeout = 0 means wait indefinitely in hardware until transmit finishes)
     if (sx126x_set_tx(NULL, 0) != SX126X_STATUS_OK) {
-        ESP_LOGE(TAG, "Failed to put radio in TX mode.");
+        LOGE(TAG, "Failed to put radio in TX mode.");
         return false;
     }
 
@@ -209,7 +209,7 @@ bool lora_send_packet(const uint8_t *data, uint8_t length, uint32_t timeout_ms) 
 
         if (irq_status & SX126X_IRQ_TX_DONE) {
             sx126x_clear_irq_status(NULL, SX126X_IRQ_TX_DONE);
-            ESP_LOGI(TAG, "Packet sent successfully (%d bytes).", length);
+            LOGI(TAG, "Packet sent successfully (%d bytes).", length);
             return true;
         }
 
@@ -217,7 +217,7 @@ bool lora_send_packet(const uint8_t *data, uint8_t length, uint32_t timeout_ms) 
         elapsed += 10;
     }
 
-    ESP_LOGE(TAG, "TX timeout expired!");
+    LOGE(TAG, "TX timeout expired!");
     sx126x_set_standby(NULL, SX126X_STANDBY_CFG_RC); // Reset radio state
     return false;
 }
@@ -229,7 +229,7 @@ bool lora_receive_packet(uint8_t *buffer, uint8_t max_length, uint8_t *rx_length
 
     // Put radio in continuous RX mode (Timeout parameter 0xFFFFFF)
     if (sx126x_set_rx(NULL, 0xFFFFFF) != SX126X_STATUS_OK) {
-        ESP_LOGE(TAG, "Failed to set RX mode.");
+        LOGE(TAG, "Failed to set RX mode.");
         return false;
     }
 
@@ -240,7 +240,7 @@ bool lora_receive_packet(uint8_t *buffer, uint8_t max_length, uint8_t *rx_length
 
         if (irq_status & SX126X_IRQ_RX_DONE) {
             if (irq_status & SX126X_IRQ_CRC_ERROR) {
-                ESP_LOGE(TAG, "Received packet CRC error!");
+                LOGE(TAG, "Received packet CRC error!");
                 sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
                 return false;
             }
@@ -259,7 +259,7 @@ bool lora_receive_packet(uint8_t *buffer, uint8_t max_length, uint8_t *rx_length
             *rx_length = bytes_to_read;
 
             sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
-            ESP_LOGI(TAG, "Received packet (%d bytes).", bytes_to_read);
+            LOGI(TAG, "Received packet (%d bytes).", bytes_to_read);
             return true;
         }
 

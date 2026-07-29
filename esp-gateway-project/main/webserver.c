@@ -4,9 +4,9 @@
 #include <string.h>
 #include "esp_wifi.h"
 #include "esp_event.h"
-#include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "logger.h"
 
 /* Compatibility definition for ESP8266_RTOS_SDK */
 #ifndef HTTPD_RESP_USE_STRLEN
@@ -274,8 +274,8 @@ static esp_err_t save_lora_handler(httpd_req_t *req) {
     if (strstr(buf, "power="))     sscanf(strstr(buf, "power="), "power=%d", &g_lora_cfg.power);
     if (strstr(buf, "sf="))        sscanf(strstr(buf, "sf="), "sf=%d", &g_lora_cfg.sf);
 
-    ESP_LOGI(TAG, "LoRa settings updated");
-    app_log_add("LoRa configuration updated.");
+    LOGI(TAG, "LoRa settings updated");
+
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/");
     httpd_resp_send(req, NULL, 0);
@@ -294,8 +294,8 @@ static esp_err_t save_mqtt_handler(httpd_req_t *req) {
     parse_form_str(buf, "port", port_str, sizeof(port_str));
     if (port_str[0] != '\0') g_mqtt_cfg.port = atoi(port_str);
 
-    ESP_LOGI(TAG, "MQTT settings updated");
-    app_log_add("MQTT configuration updated.");
+    LOGI(TAG, "MQTT settings updated");
+
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/");
     httpd_resp_send(req, NULL, 0);
@@ -316,8 +316,8 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
     esp_wifi_set_config(WIFI_IF_STA, &sta_config);
     esp_wifi_connect();
 
-    ESP_LOGI(TAG, "Wi-Fi station connecting...");
-    app_log_add("Connecting to Station Wi-Fi network...");
+    LOGI(TAG, "Wi-Fi station connecting...");
+
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/");
     httpd_resp_send(req, NULL, 0);
@@ -350,7 +350,7 @@ void wifi_init_apsta(void) {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    app_log_add("Wi-Fi APSTA initialized.");
+    LOGI(TAG, "Wi-Fi APSTA initialized.");
 }
 
 httpd_handle_t start_webserver(void) {
@@ -371,7 +371,7 @@ httpd_handle_t start_webserver(void) {
         httpd_uri_t wifi_uri = { .uri = "/save_wifi", .method = HTTP_POST, .handler = save_wifi_handler };
         httpd_register_uri_handler(server, &wifi_uri);
 
-        app_log_add("Webserver started.");
+        LOGI(TAG, "Webserver started.");
         return server;
     }
     return NULL;
