@@ -85,8 +85,8 @@ void app_main(void) {
     LOGI(TAG, "Free heap before network init: %d bytes", (unsigned int)esp_get_free_heap_size());
 
     xTaskCreate(&network_init_task, "net_init", 2560, NULL, 5, NULL);
-    //xTaskCreate(&led_status_task, "led_task", 1024, NULL, 4, NULL);
-    //xTaskCreate(&lora_gateway_task, "lora_task", 3072, NULL, 3, NULL);
+    xTaskCreate(&led_status_task, "led_task", 1024, NULL, 4, NULL);
+    xTaskCreate(&lora_gateway_task, "lora_task", 3072, NULL, 3, NULL);
 
     LOGI(TAG, "Free heap after tasks created: %d bytes", (unsigned int)esp_get_free_heap_size());
 

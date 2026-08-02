@@ -1,68 +1,152 @@
 #include "lora.h"
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "logger.h"
-
-// SWSD003 Library Headers
-#include "sx126x.h"
-#include "sx126x_hal.h"
+#include "esp8266/pin_mux_register.h"
+#include "esp8266/gpio_register.h"
 
 static const char *TAG = "lora_driver";
 
-static void lora_wait_busy(void) {
-    while (gpio_get_level(LORA_BUSY_GPIO) == 1) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-}
+// -----------------------------------------------------------------------------
+// SX1276/77/78 register map (subset used by this driver)
+// -----------------------------------------------------------------------------
+#define REG_FIFO                 0x00
+#define REG_OP_MODE               0x01
+#define REG_FRF_MSB               0x06
+#define REG_FRF_MID               0x07
+#define REG_FRF_LSB               0x08
+#define REG_PA_CONFIG              0x09
+#define REG_OCP                   0x0B
+#define REG_LNA                   0x0C
+#define REG_FIFO_ADDR_PTR          0x0D
+#define REG_FIFO_TX_BASE_ADDR      0x0E
+#define REG_FIFO_RX_BASE_ADDR      0x0F
+#define REG_FIFO_RX_CURRENT_ADDR   0x10
+#define REG_IRQ_FLAGS_MASK         0x11
+#define REG_IRQ_FLAGS              0x12
+#define REG_RX_NB_BYTES            0x13
+#define REG_PKT_SNR_VALUE          0x19
+#define REG_PKT_RSSI_VALUE         0x1A
+#define REG_MODEM_CONFIG_1         0x1D
+#define REG_MODEM_CONFIG_2         0x1E
+#define REG_PREAMBLE_MSB           0x20
+#define REG_PREAMBLE_LSB           0x21
+#define REG_PAYLOAD_LENGTH         0x22
+#define REG_MAX_PAYLOAD_LENGTH     0x23
+#define REG_MODEM_CONFIG_3         0x26
+#define REG_DETECTION_OPTIMIZE     0x31
+#define REG_DETECTION_THRESHOLD    0x37
+#define REG_SYNC_WORD              0x39
+#define REG_DIO_MAPPING_1          0x40
+#define REG_VERSION                0x42
+#define REG_PA_DAC                 0x4D
+
+// RegOpMode
+#define LONG_RANGE_MODE       0x80
+#define MODE_SLEEP             0x00
+#define MODE_STDBY             0x01
+#define MODE_TX                0x03
+#define MODE_RX_CONTINUOUS     0x05
+
+// RegPaConfig
+#define PA_BOOST                0x80
+
+// RegIrqFlags
+#define IRQ_RX_TIMEOUT_MASK      0x80
+#define IRQ_RX_DONE_MASK         0x40
+#define IRQ_PAYLOAD_CRC_ERROR    0x20
+#define IRQ_TX_DONE_MASK         0x08
+#define IRQ_ALL_MASK             0xFF
+
+#define SX1276_XTAL_FREQ  32000000.0
+#define SX1276_FSTEP      (SX1276_XTAL_FREQ / 524288.0) // 2^19
 
 // -----------------------------------------------------------------------------
-// SWSD003 Low-Level HAL Functions
+// Low-level SPI register access
 // -----------------------------------------------------------------------------
-sx126x_hal_status_t sx126x_hal_write(const void* context, const uint8_t* command, 
-                                     const uint16_t command_length, const uint8_t* data, 
-                                     const uint16_t data_length) {
-    lora_wait_busy();
+// NOTE: spi_trans_t.mosi/.miso are declared as uint32_t* by this driver, not
+// uint8_t*/void*. To satisfy that type while keeping the exact same verified
+// byte layout in memory, buffers below are declared as uint32_t and accessed
+// byte-wise through a uint8_t* alias - this changes nothing at runtime, it
+// only fixes the pointer type the compiler was warning about.
+
+static uint8_t lora_read_reg(uint8_t addr) {
     gpio_set_level(LORA_NSS_GPIO, 0);
 
+    // Single full-duplex transaction: byte 0 = address (read bit clear),
+    // byte 1 = dummy out / real data in. Splitting this into two separate
+    // spi_trans() calls is unreliable - do it as one transfer, same as writes.
+    WORD_ALIGNED_ATTR uint32_t tx_word = 0;
+    WORD_ALIGNED_ATTR uint32_t rx_word = 0;
+    ((uint8_t *)&tx_word)[0] = addr & 0x7F;
+
     spi_trans_t trans = {0};
-    trans.mosi = (void*)command;
-    trans.bits.mosi = command_length * 8;
+    trans.mosi = &tx_word;
+    trans.miso = &rx_word;
+    trans.bits.mosi = 8;
+    trans.bits.miso = 8;
     spi_trans(HSPI_HOST, &trans);
 
-    if (data_length > 0 && data != NULL) {
-        memset(&trans, 0, sizeof(trans));
-        trans.mosi = (void*)data;
-        trans.bits.mosi = data_length * 8;
-        spi_trans(HSPI_HOST, &trans);
-    }
-
     gpio_set_level(LORA_NSS_GPIO, 1);
-    lora_wait_busy();
-    return SX126X_HAL_STATUS_OK;
+    return ((uint8_t *)&rx_word)[0];
 }
 
-sx126x_hal_status_t sx126x_hal_read(const void* context, const uint8_t* command, 
-                                    const uint16_t command_length, uint8_t* data, 
-                                    const uint16_t data_length) {
-    lora_wait_busy();
+static void lora_write_reg(uint8_t addr, uint8_t value) {
     gpio_set_level(LORA_NSS_GPIO, 0);
 
+    WORD_ALIGNED_ATTR uint32_t tx_word = 0;
+    uint8_t *tx = (uint8_t *)&tx_word;
+    tx[0] = addr | 0x80; // MSB=1 -> write
+    tx[1] = value;
+
     spi_trans_t trans = {0};
-    trans.mosi = (void*)command;
-    trans.bits.mosi = command_length * 8;
+    trans.mosi = &tx_word;
+    trans.bits.mosi = 16;
     spi_trans(HSPI_HOST, &trans);
 
-    if (data_length > 0 && data != NULL) {
-        memset(&trans, 0, sizeof(trans));
-        trans.miso = data;
-        trans.bits.miso = data_length * 8;
-        spi_trans(HSPI_HOST, &trans);
-    }
-
     gpio_set_level(LORA_NSS_GPIO, 1);
-    lora_wait_busy();
-    return SX126X_HAL_STATUS_OK;
+}
+
+static void lora_write_fifo(const uint8_t *data, uint8_t length) {
+    // Single transaction: address byte + payload, all on MOSI (no read-back needed for a write).
+    static WORD_ALIGNED_ATTR uint32_t tx_words[64]; // 64*4 = 256 bytes
+    uint8_t *tx = (uint8_t *)tx_words;
+    tx[0] = REG_FIFO | 0x80;
+    memcpy(&tx[1], data, length);
+
+    gpio_set_level(LORA_NSS_GPIO, 0);
+    spi_trans_t trans = {0};
+    trans.mosi = tx_words;
+    trans.bits.mosi = (length + 1) * 8;
+    spi_trans(HSPI_HOST, &trans);
+    gpio_set_level(LORA_NSS_GPIO, 1);
+}
+
+static void lora_read_fifo(uint8_t *data, uint8_t length) {
+    // Same phase model as lora_read_reg: the mosi phase (address byte) and
+    // miso phase (payload) are sequential, not simultaneous, so no dummy
+    // padding byte or rx[] offset is needed - miso phase gives real data
+    // starting at index 0.
+    static WORD_ALIGNED_ATTR uint32_t tx_word = 0;
+    static WORD_ALIGNED_ATTR uint32_t rx_words[64]; // 64*4 = 256 bytes
+    ((uint8_t *)&tx_word)[0] = REG_FIFO & 0x7F;
+
+    gpio_set_level(LORA_NSS_GPIO, 0);
+    spi_trans_t trans = {0};
+    trans.mosi = &tx_word;
+    trans.miso = rx_words;
+    trans.bits.mosi = 8;
+    trans.bits.miso = length * 8;
+    spi_trans(HSPI_HOST, &trans);
+    gpio_set_level(LORA_NSS_GPIO, 1);
+
+    memcpy(data, rx_words, length);
+}
+
+static void lora_set_mode(uint8_t mode) {
+    lora_write_reg(REG_OP_MODE, LONG_RANGE_MODE | mode);
 }
 
 // -----------------------------------------------------------------------------
@@ -84,99 +168,114 @@ bool lora_init(const lora_config_t *config) {
     };
     gpio_config(&io_conf);
 
-    gpio_config_t busy_conf = {
-        .pin_bit_mask = (1ULL << LORA_BUSY_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    gpio_config(&busy_conf);
-
     gpio_set_level(LORA_NSS_GPIO, 1);
 
-    // 2. Perform Hardware Reset Sequence
+    // 2. Hardware Reset Sequence (SX1276/78 needs RST low >=100us, then wait >=5ms)
     gpio_set_level(LORA_RST_GPIO, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(LORA_RST_GPIO, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // 3. Initialize SPI Bus
+    // 3. Explicitly route GPIO12/13/14 to the HSPI peripheral (MISO/MOSI/CLK).
+    // These pins default to plain GPIO on reset; if the IO mux isn't switched
+    // to HSPI function (2), spi_trans() will never actually drive real clock/
+    // data on the pins even though it reports success. Harmless/idempotent
+    // if spi_init() below already does this itself.
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, 2); // GPIO12 -> HSPI MISO
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, 2); // GPIO13 -> HSPI MOSI
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTMS_U, 2); // GPIO14 -> HSPI CLK
+
+    // 4. Initialize SPI Bus
     spi_config_t spi_conf = {
         .interface = { .cs_en = 0 },
         .clk_div = SPI_2MHz_DIV,
     };
     spi_init(HSPI_HOST, &spi_conf);
 
-    lora_wait_busy();
-
-    // 4. Set Standby Mode (STDBY_RC)
-    if (sx126x_set_standby(NULL, SX126X_STANDBY_CFG_RC) != SX126X_STATUS_OK) {
-        LOGE(TAG, "Failed to put SX1262 into standby mode.");
+    // 5. Verify chip identity - RegVersion should read back 0x12 on all SX1276/77/78/79 parts
+    uint8_t version = lora_read_reg(REG_VERSION);
+    if (version != 0x12) {
+        LOGE(TAG, "Unexpected RegVersion 0x%02X (expected 0x12) - check wiring/chip.", version);
         return false;
     }
 
-    // 5. Ra-01SH Module Specifics: Set LDO Mode and RF Switch Control
-    sx126x_set_reg_mode(NULL, SX126X_REG_MODE_LDO);
-    sx126x_set_dio2_as_rf_sw_ctrl(NULL, true);
+    // 6. Sleep -> LoRa mode must be selected while in SLEEP, then move to STANDBY
+    lora_set_mode(MODE_SLEEP);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    lora_set_mode(MODE_STDBY);
 
-    // 6. Set Radio to LoRa Packet Type
-    sx126x_set_pkt_type(NULL, SX126X_PKT_TYPE_LORA);
+    // 7. Set RF Frequency
+    uint64_t frf = (uint64_t)((double)config->frequency_hz / SX1276_FSTEP + 0.5);
+    lora_write_reg(REG_FRF_MSB, (uint8_t)(frf >> 16));
+    lora_write_reg(REG_FRF_MID, (uint8_t)(frf >> 8));
+    lora_write_reg(REG_FRF_LSB, (uint8_t)(frf >> 0));
 
-    // 7. Set RF Frequency (e.g. 915 MHz)
-    sx126x_set_rf_freq(NULL, config->frequency_hz);
+    // 8. Configure PA. Ra-01H routes RF out through PA_BOOST (not RFO).
+    // 2-17 dBm: PaConfig only. 18-20 dBm: also enable PA_DAC high-power mode.
+    int8_t power = config->power_dbm;
+    if (power > 20) power = 20;
+    if (power < 2) power = 2;
 
-    // 8. Configure Power Amplifier (PA) & Tx Output Power for SX1262 (+22 dBm max chip)
-    // Duty cycle = 0x04, hp_max = 0x07, device_sel = 0x00 (SX1262), pa_lut = 0x01
-    sx126x_pa_cfg_params_t pa_cfg = {
-        .pa_duty_cycle = 0x04,
-        .hp_max        = 0x07,
-        .device_sel    = 0x00,
-        .pa_lut        = 0x01
-    };
-    sx126x_set_pa_cfg(NULL, &pa_cfg);
-    sx126x_set_tx_params(NULL, config->power_dbm, SX126X_RAMP_20_US);
+    if (power > 17) {
+        lora_write_reg(REG_PA_DAC, 0x87); // +20dBm high power mode
+        lora_write_reg(REG_PA_CONFIG, PA_BOOST | (uint8_t)(power - 5));
+    } else {
+        lora_write_reg(REG_PA_DAC, 0x84); // normal power mode
+        lora_write_reg(REG_PA_CONFIG, PA_BOOST | (uint8_t)(power - 2));
+    }
+    lora_write_reg(REG_OCP, 0x20 | 0x0B); // OcpOn=1, ~100mA trim (safe default)
 
-    // 9. Configure Modulation Parameters (SF12, BW125, CR4/5, Low Data Rate Optimization)
-    // Note: LDRO (Low Data Rate Optimization) must be enabled for SF11/SF12 with 125kHz BW
-    bool ldro_enable = (config->sf == SX126X_LORA_SF11 || config->sf == SX126X_LORA_SF12) && 
-                       (config->bw == SX126X_LORA_BW_125);
+    // 9. LNA: max gain + LF/HF boost (standard recipe for sensitivity)
+    lora_write_reg(REG_LNA, 0x23);
 
-    sx126x_mod_params_lora_t mod_params = {
-        .sf   = config->sf,
-        .bw   = config->bw,
-        .cr   = config->cr,
-        .ldro = ldro_enable ? 1 : 0
-    };
-    sx126x_set_lora_mod_params(NULL, &mod_params);
+    // 10. FIFO base addresses - use full 256-byte FIFO for both TX and RX
+    lora_write_reg(REG_FIFO_TX_BASE_ADDR, 0x00);
+    lora_write_reg(REG_FIFO_RX_BASE_ADDR, 0x00);
 
-    // 10. Configure Packet Parameters
-    sx126x_pkt_params_lora_t pkt_params = {
-        .preamble_len_in_symb = config->preamble_length,
-        .header_type          = config->header_explicit ? SX126X_LORA_PKT_EXPLICIT : SX126X_LORA_PKT_IMPLICIT,
-        .pld_len_in_bytes     = config->payload_length,
-        .crc_is_on            = config->crc_on,
-        .invert_iq_is_on      = config->invert_iq
-    };
-    sx126x_set_lora_pkt_params(NULL, &pkt_params);
+    // 11. Modem Config 1: Bandwidth, Coding Rate, explicit/implicit header
+    uint8_t mc1 = ((uint8_t)config->bw << 4) | ((uint8_t)config->cr << 1) |
+                  (config->header_explicit ? 0 : 0x01);
+    lora_write_reg(REG_MODEM_CONFIG_1, mc1);
 
-    // 11. Set LoRa Sync Word (0x1424 = Public Network / LoRaWAN, 0x12 = Private Network default)
-    sx126x_set_lora_sync_word(NULL, 0x12);
+    // 12. Modem Config 2: Spreading Factor, CRC
+    uint8_t mc2 = ((uint8_t)config->sf << 4) | (config->crc_on ? 0x04 : 0x00);
+    lora_write_reg(REG_MODEM_CONFIG_2, mc2);
 
-    LOGI(TAG, "Ra-01SH configured: Freq=%d Hz, Power=%d dBm, SF=%d, BW=%d, CR=%d",
+    // 13. Modem Config 3: Low Data Rate Optimization (required for SF11/12 @ BW125) + AGC
+    bool ldro = (config->sf == LORA_SF11 || config->sf == LORA_SF12) &&
+                (config->bw == LORA_BW_125_KHZ);
+    uint8_t mc3 = 0x04; // AgcAutoOn = 1
+    if (ldro) mc3 |= 0x08;
+    lora_write_reg(REG_MODEM_CONFIG_3, mc3);
+
+    // 14. Detection optimize / threshold - standard values for SF7-SF12
+    lora_write_reg(REG_DETECTION_OPTIMIZE, 0xC3);
+    lora_write_reg(REG_DETECTION_THRESHOLD, 0x0A);
+
+    // 15. Preamble length
+    lora_write_reg(REG_PREAMBLE_MSB, (uint8_t)(config->preamble_length >> 8));
+    lora_write_reg(REG_PREAMBLE_LSB, (uint8_t)(config->preamble_length & 0xFF));
+
+    // 16. Payload length (used directly in implicit header mode; also sets max in explicit)
+    lora_write_reg(REG_PAYLOAD_LENGTH, config->payload_length);
+    lora_write_reg(REG_MAX_PAYLOAD_LENGTH, 0xFF);
+
+    // 17. Sync word - 0x12 is the standard "private network" LoRa sync word
+    lora_write_reg(REG_SYNC_WORD, 0x12);
+
+    LOGI(TAG, "Ra-01H configured: Freq=%d Hz, Power=%d dBm, SF=%d, BW=%d, CR=%d",
              config->frequency_hz, config->power_dbm, config->sf, config->bw, config->cr);
 
     return true;
 }
 
 bool lora_check_connection(void) {
-    sx126x_chip_status_t status;
-    if (sx126x_get_status(NULL, &status) == SX126X_STATUS_OK) {
-        LOGI(TAG, "Ra-01SH status check OK! Mode: 0x%02X, Cmd Status: 0x%02X", 
-                 status.chip_mode, status.cmd_status);
+    uint8_t version = lora_read_reg(REG_VERSION);
+    if (version == 0x12) {
+        LOGI(TAG, "Ra-01H status check OK! RegVersion: 0x%02X", version);
         return true;
     }
-    LOGE(TAG, "Failed communication with Ra-01SH module.");
+    LOGE(TAG, "Failed communication with Ra-01H module (RegVersion read: 0x%02X).", version);
     return false;
 }
 
@@ -186,80 +285,67 @@ bool lora_check_connection(void) {
 bool lora_send_packet(const uint8_t *data, uint8_t length, uint32_t timeout_ms) {
     if (data == NULL || length == 0) return false;
 
-    // Clear IRQ flags
-    sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
+    lora_set_mode(MODE_STDBY);
 
-    // Write payload into chip FIFO at buffer offset 0x00
-    if (sx126x_write_buffer(NULL, 0x00, data, length) != SX126X_STATUS_OK) {
-        LOGE(TAG, "Failed to write payload to SX1262 buffer.");
-        return false;
-    }
+    lora_write_reg(REG_FIFO_ADDR_PTR, 0x00);
+    lora_write_fifo(data, length);
+    lora_write_reg(REG_PAYLOAD_LENGTH, length);
 
-    // Set Tx mode (Timeout = 0 means wait indefinitely in hardware until transmit finishes)
-    if (sx126x_set_tx(NULL, 0) != SX126X_STATUS_OK) {
-        LOGE(TAG, "Failed to put radio in TX mode.");
-        return false;
-    }
+    lora_write_reg(REG_IRQ_FLAGS, IRQ_ALL_MASK); // clear (write-1-to-clear)
+    lora_set_mode(MODE_TX);
 
-    // Poll until TxDone IRQ status flag is set or timeout occurs
     uint32_t elapsed = 0;
     while (elapsed < timeout_ms) {
-        sx126x_irq_mask_t irq_status;
-        sx126x_get_irq_status(NULL, &irq_status);
-
-        if (irq_status & SX126X_IRQ_TX_DONE) {
-            sx126x_clear_irq_status(NULL, SX126X_IRQ_TX_DONE);
+        uint8_t irq = lora_read_reg(REG_IRQ_FLAGS);
+        if (irq & IRQ_TX_DONE_MASK) {
+            lora_write_reg(REG_IRQ_FLAGS, IRQ_ALL_MASK);
             LOGI(TAG, "Packet sent successfully (%d bytes).", length);
+            lora_set_mode(MODE_STDBY);
             return true;
         }
-
         vTaskDelay(pdMS_TO_TICKS(10));
         elapsed += 10;
     }
 
     LOGE(TAG, "TX timeout expired!");
-    sx126x_set_standby(NULL, SX126X_STANDBY_CFG_RC); // Reset radio state
+    lora_write_reg(REG_IRQ_FLAGS, IRQ_ALL_MASK);
+    lora_set_mode(MODE_STDBY);
     return false;
 }
 
 bool lora_receive_packet(uint8_t *buffer, uint8_t max_length, uint8_t *rx_length, uint32_t timeout_ms) {
     if (buffer == NULL || rx_length == NULL) return false;
 
-    sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
-
-    // Put radio in continuous RX mode (Timeout parameter 0xFFFFFF)
-    if (sx126x_set_rx(NULL, 0xFFFFFF) != SX126X_STATUS_OK) {
-        LOGE(TAG, "Failed to set RX mode.");
-        return false;
-    }
+    lora_set_mode(MODE_STDBY);
+    lora_write_reg(REG_FIFO_ADDR_PTR, 0x00);
+    lora_write_reg(REG_IRQ_FLAGS, IRQ_ALL_MASK);
+    lora_set_mode(MODE_RX_CONTINUOUS);
 
     uint32_t elapsed = 0;
     while (elapsed <= timeout_ms) {
-        sx126x_irq_mask_t irq_status;
-        sx126x_get_irq_status(NULL, &irq_status);
+        uint8_t irq = lora_read_reg(REG_IRQ_FLAGS);
 
-        if (irq_status & SX126X_IRQ_RX_DONE) {
-            if (irq_status & SX126X_IRQ_CRC_ERROR) {
+        if (irq & IRQ_RX_DONE_MASK) {
+            if (irq & IRQ_PAYLOAD_CRC_ERROR) {
                 LOGE(TAG, "Received packet CRC error!");
-                sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
+                lora_write_reg(REG_IRQ_FLAGS, IRQ_ALL_MASK);
+                lora_set_mode(MODE_STDBY);
                 return false;
             }
 
-            // Get received payload info
-            sx126x_rx_buffer_status_t rx_buffer_status;
-            sx126x_get_rx_buffer_status(NULL, &rx_buffer_status);
-
-            uint8_t bytes_to_read = rx_buffer_status.pld_len_in_bytes;
+            uint8_t bytes_to_read = lora_read_reg(REG_RX_NB_BYTES);
             if (bytes_to_read > max_length) {
                 bytes_to_read = max_length;
             }
 
-            // Read payload from chip internal buffer
-            sx126x_read_buffer(NULL, rx_buffer_status.buffer_start_pointer, buffer, bytes_to_read);
+            uint8_t fifo_addr = lora_read_reg(REG_FIFO_RX_CURRENT_ADDR);
+            lora_write_reg(REG_FIFO_ADDR_PTR, fifo_addr);
+            lora_read_fifo(buffer, bytes_to_read);
             *rx_length = bytes_to_read;
 
-            sx126x_clear_irq_status(NULL, SX126X_IRQ_ALL);
+            lora_write_reg(REG_IRQ_FLAGS, IRQ_ALL_MASK);
             LOGI(TAG, "Received packet (%d bytes).", bytes_to_read);
+            lora_set_mode(MODE_STDBY);
             return true;
         }
 
@@ -267,7 +353,7 @@ bool lora_receive_packet(uint8_t *buffer, uint8_t max_length, uint8_t *rx_length
         elapsed += 10;
     }
 
-    // Standby radio if timeout expired with no packet
-    sx126x_set_standby(NULL, SX126X_STANDBY_CFG_RC);
+    lora_write_reg(REG_IRQ_FLAGS, IRQ_ALL_MASK);
+    lora_set_mode(MODE_STDBY);
     return false;
 }
