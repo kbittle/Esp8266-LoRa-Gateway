@@ -2,7 +2,6 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_system.h" // Ensures heap API access
 
@@ -10,6 +9,7 @@
 #include "sk9822.h"
 #include "lora.h"
 #include "webserver.h"
+#include "logger.h"
 
 static const char *TAG = "gateway_main";
 
@@ -29,7 +29,7 @@ void led_status_task(void *pvParameters) {
 void network_init_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    ESP_LOGI(TAG, "Starting webserver");
+    LOGI(TAG, "Starting webserver");
 
     // Initialize SoftAP & Webserver inside dedicated task context
     wifi_init_apsta();
@@ -40,14 +40,14 @@ void network_init_task(void *pvParameters) {
 }
 
 void lora_gateway_task(void *pvParameters) {
-    ESP_LOGI(TAG, "Starting LoRa Gateway (Ra-01SH / SX1262)");
+    LOGI(TAG, "Starting LoRa Gateway (Ra-01SH / SX1262)");
 
     lora_config_t lora_cfg = LORA_CONFIG_DEFAULT();
 
     if (lora_init(&lora_cfg) && lora_check_connection()) {
-        ESP_LOGI(TAG, "LoRa Gateway initialization complete.");
+        LOGI(TAG, "LoRa Gateway initialization complete.");
     } else {
-        ESP_LOGE(TAG, "LoRa Gateway initialization failed.");
+        LOGI(TAG, "LoRa Gateway initialization failed.");
     }
 
     // --- Transmit Packet Example ---
@@ -57,7 +57,7 @@ void lora_gateway_task(void *pvParameters) {
     // ALWAYS yield between operations to keep watchdog happy
     vTaskDelay(pdMS_TO_TICKS(100));
     
-    ESP_LOGI(TAG, "LoRa Gateway RX Mode");
+    LOGI(TAG, "LoRa Gateway RX Mode");
 
     while (1) {
         // --- Receive Packet Example ---
@@ -66,7 +66,7 @@ void lora_gateway_task(void *pvParameters) {
         
         if (lora_receive_packet(rx_buf, sizeof(rx_buf), &rx_len, 3000)) {
             rx_buf[rx_len] = '\0';
-            ESP_LOGI(TAG, "Payload: %s", (char*)rx_buf);
+            LOGI(TAG, "Payload: %s", (char*)rx_buf);
         }
 
         // Delay between loop iterations
@@ -82,13 +82,13 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "Free heap before network init: %d bytes", (unsigned int)esp_get_free_heap_size());
+    LOGI(TAG, "Free heap before network init: %d bytes", (unsigned int)esp_get_free_heap_size());
 
     xTaskCreate(&network_init_task, "net_init", 2560, NULL, 5, NULL);
-    //xTaskCreate(&led_status_task, "led_task", 1024, NULL, 4, NULL);
-    //xTaskCreate(&lora_gateway_task, "lora_task", 3072, NULL, 3, NULL);
+    xTaskCreate(&led_status_task, "led_task", 1024, NULL, 4, NULL);
+    xTaskCreate(&lora_gateway_task, "lora_task", 3072, NULL, 3, NULL);
 
-    ESP_LOGI(TAG, "Free heap after tasks created: %d bytes", (unsigned int)esp_get_free_heap_size());
+    LOGI(TAG, "Free heap after tasks created: %d bytes", (unsigned int)esp_get_free_heap_size());
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(5000));

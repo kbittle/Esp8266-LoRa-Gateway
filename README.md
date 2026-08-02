@@ -1,5 +1,7 @@
 # Esp8266-LoRa-Gateway
 
+[![Build ESP8266 Gateway Firmware](https://github.com/kbittle/Esp8266-LoRa-Gateway/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/kbittle/Esp8266-LoRa-Gateway/actions/workflows/build.yml)
+
 Custom PCB and software for WiFi(ESP8266) to LoRa(Ra-01) gateway. This is meant to fit in a [DMB-4770 enclosure](https://www.digikey.com/en/products/detail/bud-industries/DMB-4770/2499326?gclsrc=aw.ds&gad_source=1&gad_campaignid=17922795960&gbraid=0AAAAADrbLliLALWqXMvqAjymSpm62XcV1&gclid=Cj0KCQjw94bTBhDQARIsAN3vv0ymIrAf8-c34imw-3O3CEBacBJsq8vE9WuR0ZiFMQMXCZOAnRCBhwAaAlsuEALw_wcB).
 
 <img src="docs/pcb-3dview.png" alt="PCB" width="800">
@@ -19,7 +21,7 @@ Esp8266-LoRa-Gateway/
 
 ## 🔌 Hardware Pinout
 
-The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01SH LoRa Module** (SX1262), and an **SK9822 RGB LED** indicator.
+The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01H LoRa Module** (SX127X), and an **SK9822 RGB LED** indicator.
 
 ### 📡 Ra-01 LoRa Module (SPI)
 
