@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+    body { margin: 0; padding: 20px; background: #1a1a2e; color: #e0e0e0; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { text-align: center; color: #00fff5; margin-bottom: 20px; }
+    .card { background: #16213e; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+    .card h2, .card h3 { margin-top: 0; color: #00fff5; border-bottom: 1px solid #0f3460; padding-bottom: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+    .stat-box { background: #0f3460; padding: 12px; border-radius: 8px; text-align: center; }
+    .stat-box h3 { margin: 0; font-size: 13px; color: #00fff5; border: none; padding: 0; }
+    .stat-box p { margin: 5px 0 0; font-size: 16px; font-weight: bold; }
+    
+    /* Top Row Layout: Side-by-Side Status & LED */
+    .top-row { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; }
+    .top-row .card { margin-bottom: 0; }
+    .status-card { flex: 2; min-width: 300px; }
+    .led-card { flex: 1; min-width: 250px; }
+
+    /* Tabs styling */
+    .tabs { display: flex; margin-bottom: 15px; border-bottom: 2px solid #0f3460; overflow-x: auto; }
+    .tab-btn { padding: 10px 20px; background: none; border: none; color: #888; cursor: pointer; font-size: 15px; font-weight: bold; white-space: nowrap; }
+    .tab-btn.active { color: #00fff5; border-bottom: 3px solid #00fff5; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    
+    /* Forms & Inputs */
+    label { display: block; margin-top: 10px; color: #00fff5; font-size: 14px; }
+    input, select { width: 100%; padding: 8px; margin-top: 5px; border-radius: 5px; border: 1px solid #0f3460; background: #0f3460; color: #fff; }
+    input[type="range"] { accent-color: #00fff5; }
+    button.submit-btn { background: #00fff5; color: #16213e; border: none; padding: 10px 15px; margin-top: 15px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%; }
+    
+    /* Compact LED Control Layout */
+    .led-control-row { display: flex; align-items: center; gap: 15px; margin-top: 10px; }
+    .color-picker-wrapper { display: flex; flex-direction: column; align-items: center; }
+    
+    /* Square Color Input */
+    input[type="color"].square-picker {
+      width: 45px;
+      height: 45px;
+      padding: 0;
+      border: 2px solid #00fff5;
+      border-radius: 6px;
+      background: none;
+      cursor: pointer;
+      margin-top: 5px;
+    }
+    input[type="color"].square-picker::-webkit-color-swatch-wrapper { padding: 0; }
+    input[type="color"].square-picker::-webkit-color-swatch { border: none; border-radius: 4px; }
+    input[type="color"].square-picker::-moz-color-swatch { border: none; border-radius: 4px; }
+
+    .slider-wrapper { flex-grow: 1; }
+
+    /* Packet Table */
+    .table-responsive { overflow-x: auto; margin-top: 15px; }
+    table { width: 100%; border-collapse: collapse; background: #0f3460; border-radius: 8px; overflow: hidden; }
+    th, td { padding: 10px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid #16213e; }
+    th { background: #00fff5; color: #16213e; font-weight: bold; }
+    td.hex { font-family: monospace; color: #00ff00; }
+
+    /* System Logs */
+    .logs { background: #000; color: #00ff00; padding: 10px; font-family: monospace; border-radius: 5px; height: 150px; overflow-y: auto; white-space: pre-wrap; }
+  </style>
+  <script>
+  function openTab(evt, tabName) {
+    var i, tc, tb;
+    tc = document.getElementsByClassName('tab-content');
+    for (i = 0; i < tc.length; i++) tc[i].style.display = 'none';
+    tb = document.getElementsByClassName('tab-btn');
+    for (i = 0; i < tb.length; i++) tb[i].className = tb[i].className.replace(' active', '');
+    document.getElementById(tabName).style.display = 'block';
+    evt.currentTarget.className += ' active';
+  }
+  function updateBrightnessVal(val) {
+    document.getElementById('b_val').innerText = val + '%';
+  }
+  </script>
+</head>
+<body>
+<div class="container">
+  <h1>LoRa to MQTT Gateway</h1>
+
+  <!-- Top Side-by-Side Flex Layout -->
+  <div class="top-row">
+    <!-- System Overview Card -->
+    <div class="card status-card">
+      <h2>System Status</h2>
+      <div class="grid">
+        <div class="stat-box"><h3>Uptime</h3><p>%UPTIME%s</p></div>
+        <div class="stat-box"><h3>Free Heap</h3><p>%HEAP% KB</p></div>
+        <div class="stat-box"><h3>Wi-Fi</h3><p>%WIFI_MODE%</p></div>
+        <div class="stat-box"><h3>MQTT</h3><p>%MQTT_STATUS%</p></div>
+        <div class="stat-box"><h3>Published</h3><p>%MQTT_PUB%</p></div>
+      </div>
+    </div>
+
+    <!-- RGB LED Control Card (Positioned to the right) -->
+    <div class="card led-card">
+      <h2>RGB LED Control</h2>
+      <form action="/save_led" method="POST">
+        <div class="led-control-row">
+          <div class="color-picker-wrapper">
+            <label for="led_color" style="margin-top:0;">Color</label>
+            <input type="color" id="led_color" name="color" value="%LED_HEX%" class="square-picker">
+          </div>
+
+          <div class="slider-wrapper">
+            <label for="brightness" style="margin-top:0;">Brightness: <span id="b_val">%LED_BRIGHTNESS%%</span></label>
+            <input type="range" id="brightness" name="brightness" min="0" max="100" value="%LED_BRIGHTNESS%" oninput="updateBrightnessVal(this.value)">
+          </div>
+        </div>
+
+        <button type="submit" class="submit-btn">Update LED</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Tabbed Section Navigation -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="openTab(event, 'LoraDiag')">LoRa Diagnostics & Packets</button>
+    <button class="tab-btn" onclick="openTab(event, 'LoraConfig')">LoRa Config</button>
+    <button class="tab-btn" onclick="openTab(event, 'MqttConfig')">MQTT Config</button>
+    <button class="tab-btn" onclick="openTab(event, 'WifiConfig')">Wi-Fi Config</button>
+  </div>
+
+  <!-- Tabbed Content Container Card -->
+  <div class="card">
+    <!-- 1. Combined LoRa Diagnostics & Rx Packets Tab -->
+    <div id="LoraDiag" class="tab-content active">
+      <h2>Radio Stats</h2>
+      <div class="grid">
+        <div class="stat-box"><h3>Radio Status</h3><p>%LORA_STATUS%</p></div>
+        <div class="stat-box"><h3>Frequency</h3><p>%FREQ% MHz</p></div>
+        <div class="stat-box"><h3>Tx Power</h3><p>%POWER% dBm</p></div>
+        <div class="stat-box"><h3>Rx / Tx Count</h3><p>%LORA_RX_TX%</p></div>
+        <div class="stat-box"><h3>Last RSSI</h3><p>%LORA_RSSI% dBm</p></div>
+        <div class="stat-box"><h3>Last SNR</h3><p>%LORA_SNR% dB</p></div>
+        <div class="stat-box"><h3>CRC Errors</h3><p>%LORA_CRC%</p></div>
+        <div class="stat-box"><h3>TX Timeouts</h3><p>%LORA_TIMEOUT%</p></div>
+        <div class="stat-box"><h3>Init Failures</h3><p>%LORA_INIT_FAIL%</p></div>
+      </div>
+
+      <h2 style="margin-top: 25px;">Received Packets Log</h2>
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>RSSI</th>
+              <th>SNR</th>
+              <th>Len</th>
+              <th>Payload Data</th>
+            </tr>
+          </thead>
+          <tbody>
+            %LORA_PACKETS_TABLE%
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 2. LoRa Config Tab -->
+    <div id="LoraConfig" class="tab-content">
+      <h2>LoRa Configuration</h2>
+      <form action="/save_lora" method="POST">
+        <label>Frequency (MHz)</label><input type="number" name="frequency" value="%FREQ%">
+        <label>Tx Power (dBm)</label><input type="number" name="power" value="%POWER%">
+        <label>Spreading Factor</label>
+        <select name="sf">
+          %SF_OPTIONS%
+        </select>
+        <button type="submit" class="submit-btn">Save LoRa Settings</button>
+      </form>
+    </div>
+
+    <!-- 3. MQTT Config Tab -->
+    <div id="MqttConfig" class="tab-content">
+      <h2>MQTT Configuration</h2>
+      <form action="/save_mqtt" method="POST">
+        <label>Broker Address</label><input type="text" name="broker" value="%BROKER%">
+        <label>Port</label><input type="number" name="port" value="%PORT%">
+        <label>Client ID</label><input type="text" name="client_id" value="%CLIENT_ID%">
+        <label>Topic Prefix</label><input type="text" name="topic_prefix" value="%TOPIC_PREFIX%">
+        <button type="submit" class="submit-btn">Save MQTT Settings</button>
+      </form>
+    </div>
+
+    <!-- 4. Wi-Fi Config Tab -->
+    <div id="WifiConfig" class="tab-content">
+      <h2>Wi-Fi Configuration</h2>
+      <form action="/save_wifi" method="POST">
+        <label>Station SSID</label><input type="text" name="ssid" value="%SSID%">
+        <label>Station Password</label><input type="password" name="password" value="%PASSWORD%">
+        <button type="submit" class="submit-btn">Connect Wi-Fi</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Logs Section -->
+  <div class="card">
+    <h3>System Logs</h3>
+    <div class="logs">%LOGS%</div>
+  </div>
+</div>
+</body>
+</html>

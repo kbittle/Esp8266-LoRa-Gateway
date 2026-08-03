@@ -15,8 +15,12 @@
 
 static const char *TAG = "webserver";
 
+/* Standard ESP-IDF embedded file symbols */
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
+
 /* In-RAM Log Buffer */
-#define LOG_MAX_ENTRIES 10
+#define LOG_MAX_ENTRIES 50
 #define LOG_ENTRY_LEN 128
 static char g_logs[LOG_MAX_ENTRIES][LOG_ENTRY_LEN] = {0};
 static int g_log_head = 0;
@@ -28,75 +32,23 @@ void app_log_add(const char *msg) {
     g_log_head = (g_log_head + 1) % LOG_MAX_ENTRIES;
 }
 
-/* -------------------------------------------------------------------------- */
-/*                               HTML Static Chunks                           */
-/* -------------------------------------------------------------------------- */
-
-static const char page_head[] =
-"<!DOCTYPE html><html><head>"
-"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-"<style>"
-"  * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }"
-"  body { margin: 0; padding: 20px; background: #1a1a2e; color: #e0e0e0; }"
-"  .container { max-width: 900px; margin: 0 auto; }"
-"  h1 { text-align: center; color: #00fff5; margin-bottom: 20px; }"
-"  .card { background: #16213e; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }"
-"  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }"
-"  .stat-box { background: #0f3460; padding: 15px; border-radius: 8px; text-align: center; }"
-"  .stat-box h3 { margin: 0; font-size: 14px; color: #00fff5; }"
-"  .stat-box p { margin: 5px 0 0; font-size: 20px; font-weight: bold; }"
-"  .tabs { display: flex; margin-bottom: 15px; border-bottom: 2px solid #0f3460; }"
-"  .tab-btn { padding: 10px 20px; background: none; border: none; color: #888; cursor: pointer; font-size: 16px; font-weight: bold; }"
-"  .tab-btn.active { color: #00fff5; border-bottom: 3px solid #00fff5; }"
-"  .tab-content { display: none; }"
-"  .tab-content.active { display: block; }"
-"  label { display: block; margin-top: 10px; color: #00fff5; font-size: 14px; }"
-"  input, select { width: 100%; padding: 8px; margin-top: 5px; border-radius: 5px; border: 1px solid #0f3460; background: #0f3460; color: #fff; }"
-"  button.submit-btn { background: #00fff5; color: #16213e; border: none; padding: 10px 15px; margin-top: 15px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%; }"
-"  .logs { background: #000; color: #00ff00; padding: 10px; font-family: monospace; border-radius: 5px; height: 150px; overflow-y: auto; white-space: pre-wrap; }"
-"</style>"
-"<script>"
-"function openTab(evt, tabName) {"
-"  var i, tc, tb;"
-"  tc = document.getElementsByClassName('tab-content');"
-"  for (i = 0; i < tc.length; i++) tc[i].style.display = 'none';"
-"  tb = document.getElementsByClassName('tab-btn');"
-"  for (i = 0; i < tb.length; i++) tb[i].className = tb[i].className.replace(' active', '');"
-"  document.getElementById(tabName).style.display = 'block';"
-"  evt.currentTarget.className += ' active';"
-"}"
-"</script>"
-"</head><body>"
-"<div class=\"container\">"
-"  <h1>LoRa to MQTT Gateway</h1>";
-
-static const char tabs_header[] =
-"  <div class=\"tabs\">"
-"    <button class=\"tab-btn active\" onclick=\"openTab(event, 'Lora')\">LoRa Config</button>"
-"    <button class=\"tab-btn\" onclick=\"openTab(event, 'Mqtt')\">MQTT Config</button>"
-"    <button class=\"tab-btn\" onclick=\"openTab(event, 'Wifi')\">Wi-Fi Config</button>"
-"  </div>"
-"  <div class=\"card\">";
-
-static const char logs_header[] =
-"  </div>"
-"  <div class=\"card\">"
-"    <h3>System Logs</h3>"
-"    <div class=\"logs\">";
-
-static const char page_footer[] =
-"</div>"
-"  </div>"
-"</div>"
-"</body></html>";
+/* Helper to replace placeholders dynamically in embedded HTML */
+static void send_template_chunk(httpd_req_t *req, const char **cursor, const char *end, const char *token, const char *value) {
+    const char *pos = strstr(*cursor, token);
+    if (pos && pos < end) {
+        if (pos > *cursor) {
+            httpd_resp_send_chunk(req, *cursor, pos - *cursor);
+        }
+        httpd_resp_send_chunk(req, value, HTTPD_RESP_USE_STRLEN);
+        *cursor = pos + strlen(token);
+    }
+}
 
 /* -------------------------------------------------------------------------- */
-/*                       Safe HTTP Chunked Generator                          */
+/*                               GET Handler                                 */
 /* -------------------------------------------------------------------------- */
 
 static esp_err_t root_get_handler(httpd_req_t *req) {
-    static char buf[256];
-
     lora_config_t lora_cfg;
     mqtt_config_t mqtt_cfg;
     wifi_config_state_t wifi_cfg;
@@ -109,128 +61,94 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "text/html");
 
-    // 1. Head & CSS
-    httpd_resp_send_chunk(req, page_head, HTTPD_RESP_USE_STRLEN);
+    const char *cursor = (const char *)index_html_start;
+    const char *end = (const char *)index_html_end;
+    char val_buf[256];
 
-    // 2. Health & Statistics Cards
-    httpd_resp_send_chunk(req, "<div class=\"card\"><div class=\"grid\">", HTTPD_RESP_USE_STRLEN);
+    // Uptime
+    snprintf(val_buf, sizeof(val_buf), "%lld", (long long)(esp_timer_get_time() / 1000000));
+    send_template_chunk(req, &cursor, end, "%UPTIME%", val_buf);
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>System Uptime</h3><p>%llds</p></div>",
-             (long long)(esp_timer_get_time() / 1000000));
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // Free Heap
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)(esp_get_free_heap_size() / 1024));
+    send_template_chunk(req, &cursor, end, "%HEAP%", val_buf);
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>Free Heap</h3><p>%u KB</p></div>",
-             (unsigned int)(esp_get_free_heap_size() / 1024));
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // Wifi Mode
+    send_template_chunk(req, &cursor, end, "%WIFI_MODE%", wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>Wi-Fi Mode</h3><p>%s</p></div>",
-             wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // MQTT Status
+    send_template_chunk(req, &cursor, end, "%MQTT_STATUS%", mqtt_cfg.connected ? "Connected" : "Disconnected");
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>MQTT Status</h3><p>%s</p></div>",
-             mqtt_cfg.connected ? "Connected" : "Disconnected");
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // LoRa Rx/Tx
+    snprintf(val_buf, sizeof(val_buf), "%u / %u", (unsigned int)stats.lora_rx_count, (unsigned int)stats.lora_tx_count);
+    send_template_chunk(req, &cursor, end, "%LORA_RX_TX%", val_buf);
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa Rx / Tx</h3><p>%u / %u</p></div>",
-             (unsigned int)stats.lora_rx_count, (unsigned int)stats.lora_tx_count);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // LoRa CRC
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_crc_err_count);
+    send_template_chunk(req, &cursor, end, "%LORA_CRC%", val_buf);
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa CRC Errors</h3><p>%u</p></div>",
-             (unsigned int)stats.lora_crc_err_count);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // LoRa Timeout
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_tx_timeout_count);
+    send_template_chunk(req, &cursor, end, "%LORA_TIMEOUT%", val_buf);
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa TX Timeouts</h3><p>%u</p></div>",
-             (unsigned int)stats.lora_tx_timeout_count);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // LoRa Init Fail
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_init_fail_count);
+    send_template_chunk(req, &cursor, end, "%LORA_INIT_FAIL%", val_buf);
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa Init Failures</h3><p>%u</p></div>",
-             (unsigned int)stats.lora_init_fail_count);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // MQTT Published
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.mqtt_pub_count);
+    send_template_chunk(req, &cursor, end, "%MQTT_PUB%", val_buf);
 
-    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>MQTT Published</h3><p>%u</p></div>",
-             (unsigned int)stats.mqtt_pub_count);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+    // LoRa Freq
+    snprintf(val_buf, sizeof(val_buf), "%lu", (unsigned long)(lora_cfg.frequency_hz / 1000000));
+    send_template_chunk(req, &cursor, end, "%FREQ%", val_buf);
 
-    httpd_resp_send_chunk(req, "</div></div>", HTTPD_RESP_USE_STRLEN);
+    // LoRa Power
+    snprintf(val_buf, sizeof(val_buf), "%d", lora_cfg.power_dbm);
+    send_template_chunk(req, &cursor, end, "%POWER%", val_buf);
 
-    // 3. Tab Buttons
-    httpd_resp_send_chunk(req, tabs_header, HTTPD_RESP_USE_STRLEN);
-
-    // 4. LoRa Tab
-    httpd_resp_send_chunk(req, "<div id=\"Lora\" class=\"tab-content active\"><form action=\"/save_lora\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
-
-    snprintf(buf, sizeof(buf), "<label>Frequency (MHz)</label><input type=\"number\" name=\"frequency\" value=\"%lu\">", 
-             (unsigned long)(lora_cfg.frequency_hz / 1000000));
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-
-    snprintf(buf, sizeof(buf), "<label>Tx Power (dBm)</label><input type=\"number\" name=\"power\" value=\"%d\">", lora_cfg.power_dbm);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-
-    httpd_resp_send_chunk(req, "<label>Spreading Factor</label><select name=\"sf\">", HTTPD_RESP_USE_STRLEN);
-
+    // SF Options
+    char sf_buf[512] = {0};
     for (int sf = 7; sf <= 12; sf++) {
-        snprintf(buf, sizeof(buf), "<option value=\"%d\" %s>SF%d</option>",
+        char opt[64];
+        snprintf(opt, sizeof(opt), "<option value=\"%d\" %s>SF%d</option>",
                  sf, (lora_cfg.sf == sf) ? "selected" : "", sf);
-        httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+        strcat(sf_buf, opt);
     }
+    send_template_chunk(req, &cursor, end, "%SF_OPTIONS%", sf_buf);
 
-    httpd_resp_send_chunk(req, "</select><button type=\"submit\" class=\"submit-btn\">Save LoRa Settings</button></form></div>", HTTPD_RESP_USE_STRLEN);
+    // MQTT Broker, Port, Client ID, Prefix
+    send_template_chunk(req, &cursor, end, "%BROKER%", mqtt_cfg.broker[0] ? mqtt_cfg.broker : "");
+    snprintf(val_buf, sizeof(val_buf), "%d", mqtt_cfg.port);
+    send_template_chunk(req, &cursor, end, "%PORT%", val_buf);
+    send_template_chunk(req, &cursor, end, "%CLIENT_ID%", mqtt_cfg.client_id[0] ? mqtt_cfg.client_id : "");
+    send_template_chunk(req, &cursor, end, "%TOPIC_PREFIX%", mqtt_cfg.topic_prefix[0] ? mqtt_cfg.topic_prefix : "");
 
-    // 5. MQTT Tab
-    httpd_resp_send_chunk(req, "<div id=\"Mqtt\" class=\"tab-content\"><form action=\"/save_mqtt\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
+    // Wi-Fi SSID & Password
+    send_template_chunk(req, &cursor, end, "%SSID%", wifi_cfg.sta_ssid[0] ? wifi_cfg.sta_ssid : "");
+    send_template_chunk(req, &cursor, end, "%PASSWORD%", wifi_cfg.sta_password[0] ? wifi_cfg.sta_password : "");
 
-    snprintf(buf, sizeof(buf), "<label>Broker Address</label><input type=\"text\" name=\"broker\" value=\"%s\">",
-             mqtt_cfg.broker[0] ? mqtt_cfg.broker : "");
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-
-    snprintf(buf, sizeof(buf), "<label>Port</label><input type=\"number\" name=\"port\" value=\"%d\">", mqtt_cfg.port);
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-
-    snprintf(buf, sizeof(buf), "<label>Client ID</label><input type=\"text\" name=\"client_id\" value=\"%s\">",
-             mqtt_cfg.client_id[0] ? mqtt_cfg.client_id : "");
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-
-    snprintf(buf, sizeof(buf), "<label>Topic Prefix</label><input type=\"text\" name=\"topic_prefix\" value=\"%s\">",
-             mqtt_cfg.topic_prefix[0] ? mqtt_cfg.topic_prefix : "");
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-
-    httpd_resp_send_chunk(req, "<button type=\"submit\" class=\"submit-btn\">Save MQTT Settings</button></form></div>", HTTPD_RESP_USE_STRLEN);
-
-    // 6. Wi-Fi Tab
-    httpd_resp_send_chunk(req, "<div id=\"Wifi\" class=\"tab-content\"><form action=\"/save_wifi\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
-
-    snprintf(buf, sizeof(buf), "<label>Station SSID</label><input type=\"text\" name=\"ssid\" value=\"%s\">",
-             wifi_cfg.sta_ssid[0] ? wifi_cfg.sta_ssid : "");
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-
-    snprintf(buf, sizeof(buf), "<label>Station Password</label><input type=\"password\" name=\"password\" value=\"%s\">",
-             wifi_cfg.sta_password[0] ? wifi_cfg.sta_password : "");
-    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
-
-    httpd_resp_send_chunk(req, "<button type=\"submit\" class=\"submit-btn\">Connect Wi-Fi</button></form></div>", HTTPD_RESP_USE_STRLEN);
-
-    // 7. Log Section Header
-    httpd_resp_send_chunk(req, logs_header, HTTPD_RESP_USE_STRLEN);
-
-    // 8. Stream Logs
+    // Logs
+    char log_buf[LOG_MAX_ENTRIES * LOG_ENTRY_LEN] = {0};
     bool empty = true;
     int idx = g_log_head;
     for (int i = 0; i < LOG_MAX_ENTRIES; i++) {
         if (g_logs[idx][0] != '\0') {
-            httpd_resp_send_chunk(req, g_logs[idx], HTTPD_RESP_USE_STRLEN);
-            httpd_resp_send_chunk(req, "\n", 1);
+            strcat(log_buf, g_logs[idx]);
+            strcat(log_buf, "\n");
             empty = false;
         }
         idx = (idx + 1) % LOG_MAX_ENTRIES;
     }
-    if (empty) {
-        httpd_resp_send_chunk(req, "System initialized.", HTTPD_RESP_USE_STRLEN);
+    send_template_chunk(req, &cursor, end, "%LOGS%", empty ? "System initialized." : log_buf);
+
+    // Flush remaining HTML tail
+    if (cursor < end) {
+        httpd_resp_send_chunk(req, cursor, end - cursor);
     }
 
-    // 9. Footer & End Response
-    httpd_resp_send_chunk(req, page_footer, HTTPD_RESP_USE_STRLEN);
+    // End response
     httpd_resp_send_chunk(req, NULL, 0);
-
     return ESP_OK;
 }
 
