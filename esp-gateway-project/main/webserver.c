@@ -7,44 +7,13 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "logger.h"
+#include "configuration.h"
 
-/* Compatibility definition for ESP8266_RTOS_SDK */
 #ifndef HTTPD_RESP_USE_STRLEN
 #define HTTPD_RESP_USE_STRLEN -1
 #endif
 
 static const char *TAG = "webserver";
-
-/* -------------------------------------------------------------------------- */
-/*                            In-RAM Gateway State                            */
-/* -------------------------------------------------------------------------- */
-
-lora_config_t_fix g_lora_cfg = {
-    .frequency = 915,
-    .power = 14,
-    .sf = 12
-};
-
-mqtt_config_t g_mqtt_cfg = {
-    .broker = "192.168.1.100",
-    .port = 1883,
-    .client_id = "lora_gateway_01",
-    .topic_prefix = "lora/gateway",
-    .connected = false
-};
-
-wifi_config_state_t g_wifi_cfg = {
-    .sta_ssid = "",
-    .sta_password = "",
-    .sta_connected = false,
-    .ip_addr = "0.0.0.0"
-};
-
-gateway_stats_t g_stats = {
-    .lora_rx_count = 0,
-    .lora_tx_count = 0,
-    .mqtt_pub_count = 0
-};
 
 /* In-RAM Log Buffer */
 #define LOG_MAX_ENTRIES 10
@@ -54,13 +23,8 @@ static int g_log_head = 0;
 
 void app_log_add(const char *msg) {
     if (!msg) return;
-    
-    // Safely cast 64-bit microsecond timer to 32-bit second uptime
     uint32_t uptime_sec = (uint32_t)(esp_timer_get_time() / 1000000ULL);
-
-    snprintf(g_logs[g_log_head], LOG_ENTRY_LEN, "[%lu] %s", 
-             (unsigned long)uptime_sec, msg);
-
+    snprintf(g_logs[g_log_head], LOG_ENTRY_LEN, "[%lu] %s", (unsigned long)uptime_sec, msg);
     g_log_head = (g_log_head + 1) % LOG_MAX_ENTRIES;
 }
 
@@ -133,12 +97,22 @@ static const char page_footer[] =
 static esp_err_t root_get_handler(httpd_req_t *req) {
     static char buf[256];
 
+    lora_config_t lora_cfg;
+    mqtt_config_t mqtt_cfg;
+    wifi_config_state_t wifi_cfg;
+    gateway_stats_t stats;
+
+    config_get_lora(&lora_cfg);
+    config_get_mqtt(&mqtt_cfg);
+    config_get_wifi(&wifi_cfg);
+    config_get_stats(&stats);
+
     httpd_resp_set_type(req, "text/html");
 
-    // 1. Send Head & CSS
+    // 1. Head & CSS
     httpd_resp_send_chunk(req, page_head, HTTPD_RESP_USE_STRLEN);
 
-    // 2. Send System Health & Statistics Cards
+    // 2. Health & Statistics Cards
     httpd_resp_send_chunk(req, "<div class=\"card\"><div class=\"grid\">", HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>System Uptime</h3><p>%llds</p></div>",
@@ -150,82 +124,95 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>Wi-Fi Mode</h3><p>%s</p></div>",
-             g_wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
+             wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>MQTT Status</h3><p>%s</p></div>",
-             g_mqtt_cfg.connected ? "Connected" : "Disconnected");
+             mqtt_cfg.connected ? "Connected" : "Disconnected");
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa Rx / Tx</h3><p>%u / %u</p></div>",
-             (unsigned int)g_stats.lora_rx_count, (unsigned int)g_stats.lora_tx_count);
+             (unsigned int)stats.lora_rx_count, (unsigned int)stats.lora_tx_count);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa CRC Errors</h3><p>%u</p></div>",
+             (unsigned int)stats.lora_crc_err_count);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa TX Timeouts</h3><p>%u</p></div>",
+             (unsigned int)stats.lora_tx_timeout_count);
+    httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>LoRa Init Failures</h3><p>%u</p></div>",
+             (unsigned int)stats.lora_init_fail_count);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<div class=\"stat-box\"><h3>MQTT Published</h3><p>%u</p></div>",
-             (unsigned int)g_stats.mqtt_pub_count);
+             (unsigned int)stats.mqtt_pub_count);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     httpd_resp_send_chunk(req, "</div></div>", HTTPD_RESP_USE_STRLEN);
 
-    // 3. Send Tab Buttons
+    // 3. Tab Buttons
     httpd_resp_send_chunk(req, tabs_header, HTTPD_RESP_USE_STRLEN);
 
-    // 4. Send LoRa Tab
+    // 4. LoRa Tab
     httpd_resp_send_chunk(req, "<div id=\"Lora\" class=\"tab-content active\"><form action=\"/save_lora\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
 
-    snprintf(buf, sizeof(buf), "<label>Frequency (MHz)</label><input type=\"number\" name=\"frequency\" value=\"%d\">", g_lora_cfg.frequency);
+    snprintf(buf, sizeof(buf), "<label>Frequency (MHz)</label><input type=\"number\" name=\"frequency\" value=\"%lu\">", 
+             (unsigned long)(lora_cfg.frequency_hz / 1000000));
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
-    snprintf(buf, sizeof(buf), "<label>Tx Power (dBm)</label><input type=\"number\" name=\"power\" value=\"%d\">", g_lora_cfg.power);
+    snprintf(buf, sizeof(buf), "<label>Tx Power (dBm)</label><input type=\"number\" name=\"power\" value=\"%d\">", lora_cfg.power_dbm);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     httpd_resp_send_chunk(req, "<label>Spreading Factor</label><select name=\"sf\">", HTTPD_RESP_USE_STRLEN);
 
     for (int sf = 7; sf <= 12; sf++) {
         snprintf(buf, sizeof(buf), "<option value=\"%d\" %s>SF%d</option>",
-                 sf, (g_lora_cfg.sf == sf) ? "selected" : "", sf);
+                 sf, (lora_cfg.sf == sf) ? "selected" : "", sf);
         httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
     }
 
     httpd_resp_send_chunk(req, "</select><button type=\"submit\" class=\"submit-btn\">Save LoRa Settings</button></form></div>", HTTPD_RESP_USE_STRLEN);
 
-    // 5. Send MQTT Tab
+    // 5. MQTT Tab
     httpd_resp_send_chunk(req, "<div id=\"Mqtt\" class=\"tab-content\"><form action=\"/save_mqtt\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<label>Broker Address</label><input type=\"text\" name=\"broker\" value=\"%s\">",
-             g_mqtt_cfg.broker[0] ? g_mqtt_cfg.broker : "");
+             mqtt_cfg.broker[0] ? mqtt_cfg.broker : "");
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
-    snprintf(buf, sizeof(buf), "<label>Port</label><input type=\"number\" name=\"port\" value=\"%d\">", g_mqtt_cfg.port);
+    snprintf(buf, sizeof(buf), "<label>Port</label><input type=\"number\" name=\"port\" value=\"%d\">", mqtt_cfg.port);
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<label>Client ID</label><input type=\"text\" name=\"client_id\" value=\"%s\">",
-             g_mqtt_cfg.client_id[0] ? g_mqtt_cfg.client_id : "");
+             mqtt_cfg.client_id[0] ? mqtt_cfg.client_id : "");
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<label>Topic Prefix</label><input type=\"text\" name=\"topic_prefix\" value=\"%s\">",
-             g_mqtt_cfg.topic_prefix[0] ? g_mqtt_cfg.topic_prefix : "");
+             mqtt_cfg.topic_prefix[0] ? mqtt_cfg.topic_prefix : "");
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     httpd_resp_send_chunk(req, "<button type=\"submit\" class=\"submit-btn\">Save MQTT Settings</button></form></div>", HTTPD_RESP_USE_STRLEN);
 
-    // 6. Send Wi-Fi Tab
+    // 6. Wi-Fi Tab
     httpd_resp_send_chunk(req, "<div id=\"Wifi\" class=\"tab-content\"><form action=\"/save_wifi\" method=\"POST\">", HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<label>Station SSID</label><input type=\"text\" name=\"ssid\" value=\"%s\">",
-             g_wifi_cfg.sta_ssid[0] ? g_wifi_cfg.sta_ssid : "");
+             wifi_cfg.sta_ssid[0] ? wifi_cfg.sta_ssid : "");
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     snprintf(buf, sizeof(buf), "<label>Station Password</label><input type=\"password\" name=\"password\" value=\"%s\">",
-             g_wifi_cfg.sta_password[0] ? g_wifi_cfg.sta_password : "");
+             wifi_cfg.sta_password[0] ? wifi_cfg.sta_password : "");
     httpd_resp_send_chunk(req, buf, HTTPD_RESP_USE_STRLEN);
 
     httpd_resp_send_chunk(req, "<button type=\"submit\" class=\"submit-btn\">Connect Wi-Fi</button></form></div>", HTTPD_RESP_USE_STRLEN);
 
-    // 7. Send Log Section Header
+    // 7. Log Section Header
     httpd_resp_send_chunk(req, logs_header, HTTPD_RESP_USE_STRLEN);
 
-    // 8. Stream In-RAM Logs
+    // 8. Stream Logs
     bool empty = true;
     int idx = g_log_head;
     for (int i = 0; i < LOG_MAX_ENTRIES; i++) {
@@ -240,7 +227,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         httpd_resp_send_chunk(req, "System initialized.", HTTPD_RESP_USE_STRLEN);
     }
 
-    // 9. Send Footer & End Response
+    // 9. Footer & End Response
     httpd_resp_send_chunk(req, page_footer, HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req, NULL, 0);
 
@@ -270,9 +257,22 @@ static esp_err_t save_lora_handler(httpd_req_t *req) {
     char buf[256] = {0};
     if (httpd_req_recv(req, buf, sizeof(buf) - 1) <= 0) return ESP_FAIL;
 
-    if (strstr(buf, "frequency=")) sscanf(strstr(buf, "frequency="), "frequency=%d", &g_lora_cfg.frequency);
-    if (strstr(buf, "power="))     sscanf(strstr(buf, "power="), "power=%d", &g_lora_cfg.power);
-    if (strstr(buf, "sf="))        sscanf(strstr(buf, "sf="), "sf=%d", &g_lora_cfg.sf);
+    lora_config_t cfg;
+    config_get_lora(&cfg);
+
+    int mhz = 0;
+    int power = 0;
+    int sf = 0;
+
+    if (strstr(buf, "frequency=")) sscanf(strstr(buf, "frequency="), "frequency=%d", &mhz);
+    if (strstr(buf, "power="))     sscanf(strstr(buf, "power="), "power=%d", &power);
+    if (strstr(buf, "sf="))        sscanf(strstr(buf, "sf="), "sf=%d", &sf);
+
+    if (mhz > 0) cfg.frequency_hz = (uint32_t)mhz * 1000000;
+    if (power != 0) cfg.power_dbm = (int8_t)power;
+    if (sf >= 6 && sf <= 12) cfg.sf = (lora_sf_t)sf;
+
+    config_set_lora(&cfg);
 
     LOGI(TAG, "LoRa settings updated");
 
@@ -286,13 +286,18 @@ static esp_err_t save_mqtt_handler(httpd_req_t *req) {
     char buf[256] = {0};
     if (httpd_req_recv(req, buf, sizeof(buf) - 1) <= 0) return ESP_FAIL;
 
-    parse_form_str(buf, "broker", g_mqtt_cfg.broker, sizeof(g_mqtt_cfg.broker));
-    parse_form_str(buf, "client_id", g_mqtt_cfg.client_id, sizeof(g_mqtt_cfg.client_id));
-    parse_form_str(buf, "topic_prefix", g_mqtt_cfg.topic_prefix, sizeof(g_mqtt_cfg.topic_prefix));
+    mqtt_config_t cfg;
+    config_get_mqtt(&cfg);
+
+    parse_form_str(buf, "broker", cfg.broker, sizeof(cfg.broker));
+    parse_form_str(buf, "client_id", cfg.client_id, sizeof(cfg.client_id));
+    parse_form_str(buf, "topic_prefix", cfg.topic_prefix, sizeof(cfg.topic_prefix));
 
     char port_str[8] = {0};
     parse_form_str(buf, "port", port_str, sizeof(port_str));
-    if (port_str[0] != '\0') g_mqtt_cfg.port = atoi(port_str);
+    if (port_str[0] != '\0') cfg.port = (uint16_t)atoi(port_str);
+
+    config_set_mqtt(&cfg);
 
     LOGI(TAG, "MQTT settings updated");
 
@@ -306,12 +311,17 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
     char buf[256] = {0};
     if (httpd_req_recv(req, buf, sizeof(buf) - 1) <= 0) return ESP_FAIL;
 
-    parse_form_str(buf, "ssid", g_wifi_cfg.sta_ssid, sizeof(g_wifi_cfg.sta_ssid));
-    parse_form_str(buf, "password", g_wifi_cfg.sta_password, sizeof(g_wifi_cfg.sta_password));
+    wifi_config_state_t cfg;
+    config_get_wifi(&cfg);
+
+    parse_form_str(buf, "ssid", cfg.sta_ssid, sizeof(cfg.sta_ssid));
+    parse_form_str(buf, "password", cfg.sta_password, sizeof(cfg.sta_password));
+
+    config_set_wifi(&cfg);
 
     wifi_config_t sta_config = {0};
-    strncpy((char*)sta_config.sta.ssid, g_wifi_cfg.sta_ssid, sizeof(sta_config.sta.ssid));
-    strncpy((char*)sta_config.sta.password, g_wifi_cfg.sta_password, sizeof(sta_config.sta.password));
+    strncpy((char*)sta_config.sta.ssid, cfg.sta_ssid, sizeof(sta_config.sta.ssid));
+    strncpy((char*)sta_config.sta.password, cfg.sta_password, sizeof(sta_config.sta.password));
 
     esp_wifi_set_config(WIFI_IF_STA, &sta_config);
     esp_wifi_connect();
