@@ -49,11 +49,13 @@ static void send_template_chunk(httpd_req_t *req, const char **cursor, const cha
 /* -------------------------------------------------------------------------- */
 
 static esp_err_t root_get_handler(httpd_req_t *req) {
+    led_config_t led_cfg;
     lora_config_t lora_cfg;
     mqtt_config_t mqtt_cfg;
     wifi_config_state_t wifi_cfg;
     gateway_stats_t stats;
 
+    config_get_led(&led_cfg);
     config_get_lora(&lora_cfg);
     config_get_mqtt(&mqtt_cfg);
     config_get_wifi(&wifi_cfg);
@@ -63,7 +65,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
 
     const char *cursor = (const char *)index_html_start;
     const char *end = (const char *)index_html_end;
-    char val_buf[256];
+    char val_buf[512];
 
     // Uptime
     snprintf(val_buf, sizeof(val_buf), "%lld", (long long)(esp_timer_get_time() / 1000000));
@@ -72,6 +74,23 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     // Free Heap
     snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)(esp_get_free_heap_size() / 1024));
     send_template_chunk(req, &cursor, end, "%HEAP%", val_buf);
+
+    // LED Mode Dropdown Options
+    snprintf(val_buf, sizeof(val_buf),
+             "<option value=\"0\" %s>Off</option>"
+             "<option value=\"1\" %s>Solid</option>"
+             "<option value=\"2\" %s>Rainbow</option>",
+             (led_cfg.mode == LED_MODE_OFF) ? "selected" : "",
+             (led_cfg.mode == LED_MODE_SOLID) ? "selected" : "",
+             (led_cfg.mode == LED_MODE_RAINBOW) ? "selected" : "");
+    send_template_chunk(req, &cursor, end, "%LED_MODE_OPTIONS%", val_buf);
+
+    // Convert LED RGB back to HTML Hex Color string
+    snprintf(val_buf, sizeof(val_buf), "#%02X%02X%02X", led_cfg.r, led_cfg.g, led_cfg.b);
+    send_template_chunk(req, &cursor, end, "%LED_HEX%", val_buf);
+
+    snprintf(val_buf, sizeof(val_buf), "%u", led_cfg.brightness);
+    send_template_chunk(req, &cursor, end, "%BRIGHTNESS%", val_buf);
 
     // Wifi Mode
     send_template_chunk(req, &cursor, end, "%WIFI_MODE%", wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
@@ -169,6 +188,60 @@ static void parse_form_str(const char *body, const char *key, char *out, size_t 
         }
         out[i] = '\0';
     }
+}
+
+static void parse_form_hex_color(const char *body, uint8_t *r, uint8_t *g, uint8_t *b) {
+    char color_str[16] = {0};
+    parse_form_str(body, "color", color_str, sizeof(color_str));
+    
+    // Hex input comes URL-encoded as %23RRGGBB or #RRGGBB
+    const char *hex_ptr = NULL;
+    if (strncmp(color_str, "%23", 3) == 0) hex_ptr = color_str + 3;
+    else if (color_str[0] == '#') hex_ptr = color_str + 1;
+    else hex_ptr = color_str;
+
+    if (strlen(hex_ptr) >= 6) {
+        unsigned int red = 0, green = 0, blue = 0;
+        if (sscanf(hex_ptr, "%02x%02x%02x", &red, &green, &blue) == 3) {
+            *r = (uint8_t)red;
+            *g = (uint8_t)green;
+            *b = (uint8_t)blue;
+        }
+    }
+}
+
+static esp_err_t save_led_handler(httpd_req_t *req) {
+    char buf[256] = {0};
+    if (httpd_req_recv(req, buf, sizeof(buf) - 1) <= 0) return ESP_FAIL;
+
+    led_config_t cfg;
+    config_get_led(&cfg);
+
+    char val[16] = {0};
+    parse_form_str(buf, "mode", val, sizeof(val));
+    if (val[0] != '\0') {
+        if (strcmp(val, "0") == 0 || strcmp(val, "off") == 0) {
+            cfg.mode = LED_MODE_OFF;
+        } else if (strcmp(val, "1") == 0 || strcmp(val, "solid") == 0) {
+            cfg.mode = LED_MODE_SOLID;
+        } else if (strcmp(val, "2") == 0 || strcmp(val, "rainbow") == 0) {
+            cfg.mode = LED_MODE_RAINBOW;
+        }
+    }
+
+    parse_form_hex_color(buf, &cfg.r, &cfg.g, &cfg.b);
+
+    parse_form_str(buf, "brightness", val, sizeof(val));
+    if (val[0] != '\0') cfg.brightness = (uint8_t)atoi(val);
+
+    config_set_led(&cfg);
+
+    LOGI(TAG, "LED settings updated via Webserver (mode: %d, RGB: %d,%d,%d)", cfg.mode, cfg.r, cfg.g, cfg.b);
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
 }
 
 static esp_err_t save_lora_handler(httpd_req_t *req) {
@@ -289,6 +362,9 @@ httpd_handle_t start_webserver(void) {
     if (httpd_start(&server, &config) == ESP_OK) {
         httpd_uri_t root_uri = { .uri = "/", .method = HTTP_GET, .handler = root_get_handler };
         httpd_register_uri_handler(server, &root_uri);
+
+        httpd_uri_t led_uri = { .uri = "/save_led", .method = HTTP_POST, .handler = save_led_handler };
+        httpd_register_uri_handler(server, &led_uri);
 
         httpd_uri_t lora_uri = { .uri = "/save_lora", .method = HTTP_POST, .handler = save_lora_handler };
         httpd_register_uri_handler(server, &lora_uri);

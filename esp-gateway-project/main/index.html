@@ -33,14 +33,14 @@
     input[type="range"] { accent-color: #00fff5; }
     button.submit-btn { background: #00fff5; color: #16213e; border: none; padding: 10px 15px; margin-top: 15px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 100%; }
     
-    /* Compact LED Control Layout */
-    .led-control-row { display: flex; align-items: center; gap: 15px; margin-top: 10px; }
+    /* Compact LED Layout */
+    .led-control-row { display: flex; align-items: center; gap: 15px; margin-top: 5px; }
     .color-picker-wrapper { display: flex; flex-direction: column; align-items: center; }
-    
-    /* Square Color Input */
+
+    /* Square Color Picker Input */
     input[type="color"].square-picker {
-      width: 45px;
-      height: 45px;
+      width: 50px;
+      height: 40px;
       padding: 0;
       border: 2px solid #00fff5;
       border-radius: 6px;
@@ -53,13 +53,6 @@
     input[type="color"].square-picker::-moz-color-swatch { border: none; border-radius: 4px; }
 
     .slider-wrapper { flex-grow: 1; }
-
-    /* Packet Table */
-    .table-responsive { overflow-x: auto; margin-top: 15px; }
-    table { width: 100%; border-collapse: collapse; background: #0f3460; border-radius: 8px; overflow: hidden; }
-    th, td { padding: 10px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid #16213e; }
-    th { background: #00fff5; color: #16213e; font-weight: bold; }
-    td.hex { font-family: monospace; color: #00ff00; }
 
     /* System Logs */
     .logs { background: #000; color: #00ff00; padding: 10px; font-family: monospace; border-radius: 5px; height: 150px; overflow-y: auto; white-space: pre-wrap; }
@@ -74,8 +67,9 @@
     document.getElementById(tabName).style.display = 'block';
     evt.currentTarget.className += ' active';
   }
+
   function updateBrightnessVal(val) {
-    document.getElementById('b_val').innerText = val + '%';
+    document.getElementById('b_val').innerText = val;
   }
   </script>
 </head>
@@ -97,19 +91,24 @@
       </div>
     </div>
 
-    <!-- RGB LED Control Card (Positioned to the right) -->
+    <!-- RGB LED Control Card -->
     <div class="card led-card">
       <h2>RGB LED Control</h2>
       <form action="/save_led" method="POST">
+        <label for="mode">Operating Mode</label>
+        <select id="mode" name="mode">
+          %LED_MODE_OPTIONS%
+        </select>
+
         <div class="led-control-row">
           <div class="color-picker-wrapper">
-            <label for="led_color" style="margin-top:0;">Color</label>
-            <input type="color" id="led_color" name="color" value="%LED_HEX%" class="square-picker">
+            <label for="color_picker" style="margin-top:0;">Color</label>
+            <input type="color" id="color_picker" name="color" value="%LED_HEX%" class="square-picker">
           </div>
 
           <div class="slider-wrapper">
-            <label for="brightness" style="margin-top:0;">Brightness: <span id="b_val">%LED_BRIGHTNESS%%</span></label>
-            <input type="range" id="brightness" name="brightness" min="0" max="100" value="%LED_BRIGHTNESS%" oninput="updateBrightnessVal(this.value)">
+            <label for="brightness" style="margin-top:0;">Brightness: <span id="b_val">%BRIGHTNESS%</span></label>
+            <input type="range" id="brightness" name="brightness" min="0" max="31" value="%BRIGHTNESS%" oninput="updateBrightnessVal(this.value)">
           </div>
         </div>
 
@@ -132,33 +131,12 @@
     <div id="LoraDiag" class="tab-content active">
       <h2>Radio Stats</h2>
       <div class="grid">
-        <div class="stat-box"><h3>Radio Status</h3><p>%LORA_STATUS%</p></div>
         <div class="stat-box"><h3>Frequency</h3><p>%FREQ% MHz</p></div>
         <div class="stat-box"><h3>Tx Power</h3><p>%POWER% dBm</p></div>
         <div class="stat-box"><h3>Rx / Tx Count</h3><p>%LORA_RX_TX%</p></div>
-        <div class="stat-box"><h3>Last RSSI</h3><p>%LORA_RSSI% dBm</p></div>
-        <div class="stat-box"><h3>Last SNR</h3><p>%LORA_SNR% dB</p></div>
         <div class="stat-box"><h3>CRC Errors</h3><p>%LORA_CRC%</p></div>
         <div class="stat-box"><h3>TX Timeouts</h3><p>%LORA_TIMEOUT%</p></div>
         <div class="stat-box"><h3>Init Failures</h3><p>%LORA_INIT_FAIL%</p></div>
-      </div>
-
-      <h2 style="margin-top: 25px;">Received Packets Log</h2>
-      <div class="table-responsive">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>RSSI</th>
-              <th>SNR</th>
-              <th>Len</th>
-              <th>Payload Data</th>
-            </tr>
-          </thead>
-          <tbody>
-            %LORA_PACKETS_TABLE%
-          </tbody>
-        </table>
       </div>
     </div>
 

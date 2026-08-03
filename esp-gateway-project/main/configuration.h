@@ -11,6 +11,20 @@
 extern "C" {
 #endif
 
+typedef enum {
+    LED_MODE_OFF = 0,
+    LED_MODE_SOLID,
+    LED_MODE_RAINBOW
+} led_mode_t;
+
+typedef struct {
+    led_mode_t mode;
+    uint8_t brightness;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+} led_config_t;
+
 typedef struct {
     char broker[64];
     uint16_t port;
@@ -41,6 +55,9 @@ typedef struct {
 void config_init(void);
 
 // Thread-safe Getters & Setters
+void config_get_led(led_config_t *out_cfg);
+void config_set_led(const led_config_t *in_cfg);
+
 void config_get_lora(lora_config_t *out_cfg);
 void config_set_lora(const lora_config_t *in_cfg);
 

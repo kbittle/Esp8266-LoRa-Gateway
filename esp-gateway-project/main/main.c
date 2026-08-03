@@ -17,12 +17,30 @@ static const char *TAG = "gateway_main";
 void led_status_task(void *pvParameters) {
     sk9822_init();
     uint8_t step = 0;
+    
     while (1) {
-        if (step == 0)      sk9822_set_color(30, 0, 0, 10);
-        else if (step == 1) sk9822_set_color(0, 30, 0, 10);
-        else                sk9822_set_color(0, 0, 30, 10);
+        led_config_t led_cfg;
+        config_get_led(&led_cfg);
 
-        step = (step + 1) % 3;
+        switch (led_cfg.mode) {
+            case LED_MODE_OFF:
+                sk9822_set_color(0, 0, 0, 0);
+                break;
+
+            case LED_MODE_SOLID:
+                sk9822_set_color(led_cfg.r, led_cfg.g, led_cfg.b, led_cfg.brightness);
+                break;
+
+            case LED_MODE_RAINBOW:
+            default:
+                if (step == 0)      sk9822_set_color(led_cfg.r, 0, 0, led_cfg.brightness);
+                else if (step == 1) sk9822_set_color(0, led_cfg.g, 0, led_cfg.brightness);
+                else                sk9822_set_color(0, 0, led_cfg.b, led_cfg.brightness);
+
+                step = (step + 1) % 3;
+                break;
+        }
+
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

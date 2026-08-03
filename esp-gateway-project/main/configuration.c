@@ -4,6 +4,14 @@
 static SemaphoreHandle_t g_config_mutex = NULL;
 
 // In-RAM System State Definitions
+static led_config_t g_led_cfg = {
+    .mode = LED_MODE_RAINBOW,
+    .brightness = 10,
+    .r = 30,
+    .g = 0,
+    .b = 0
+};
+
 static lora_config_t g_lora_cfg = LORA_CONFIG_DEFAULT();
 
 static mqtt_config_t g_mqtt_cfg = {
@@ -26,6 +34,20 @@ static gateway_stats_t g_stats = {0};
 void config_init(void) {
     if (g_config_mutex == NULL) {
         g_config_mutex = xSemaphoreCreateMutex();
+    }
+}
+
+void config_get_led(led_config_t *out_cfg) {
+    if (xSemaphoreTake(g_config_mutex, portMAX_DELAY) == pdTRUE) {
+        *out_cfg = g_led_cfg;
+        xSemaphoreGive(g_config_mutex);
+    }
+}
+
+void config_set_led(const led_config_t *in_cfg) {
+    if (xSemaphoreTake(g_config_mutex, portMAX_DELAY) == pdTRUE) {
+        g_led_cfg = *in_cfg;
+        xSemaphoreGive(g_config_mutex);
     }
 }
 
