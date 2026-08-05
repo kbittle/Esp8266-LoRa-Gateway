@@ -89,15 +89,27 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     const char *end = (const char *)index_html_end;
     char val_buf[256];
 
-    // Uptime
+    // --- System Status Card (Exact HTML Order) ---
+    // 1. %UPTIME%
     snprintf(val_buf, sizeof(val_buf), "%lld", (long long)(esp_timer_get_time() / 1000000));
     send_template_chunk(req, &cursor, end, "%UPTIME%", val_buf);
 
-    // Free Heap
+    // 2. %HEAP%
     snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)(esp_get_free_heap_size() / 1024));
     send_template_chunk(req, &cursor, end, "%HEAP%", val_buf);
 
-    // LED Mode Dropdown Options
+    // 3. %WIFI_MODE%
+    send_template_chunk(req, &cursor, end, "%WIFI_MODE%", wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
+
+    // 4. %MQTT_STATUS%
+    send_template_chunk(req, &cursor, end, "%MQTT_STATUS%", mqtt_cfg.connected ? "Connected" : "Disconnected");
+
+    // 5. %MQTT_PUB%
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.mqtt_pub_count);
+    send_template_chunk(req, &cursor, end, "%MQTT_PUB%", val_buf);
+
+    // --- RGB LED Control Card ---
+    // 6. %LED_MODE_OPTIONS%
     snprintf(val_buf, sizeof(val_buf),
              "<option value=\"0\" %s>Off</option>"
              "<option value=\"1\" %s>Solid</option>"
@@ -107,48 +119,49 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
              (led_cfg.mode == LED_MODE_RAINBOW) ? "selected" : "");
     send_template_chunk(req, &cursor, end, "%LED_MODE_OPTIONS%", val_buf);
 
-    // Convert LED RGB back to HTML Hex Color string
+    // 7. %LED_HEX%
     snprintf(val_buf, sizeof(val_buf), "#%02X%02X%02X", led_cfg.r, led_cfg.g, led_cfg.b);
     send_template_chunk(req, &cursor, end, "%LED_HEX%", val_buf);
 
+    // 8. %BRIGHTNESS%
     snprintf(val_buf, sizeof(val_buf), "%u", led_cfg.brightness);
     send_template_chunk(req, &cursor, end, "%BRIGHTNESS%", val_buf);
 
-    // Wifi Mode
-    send_template_chunk(req, &cursor, end, "%WIFI_MODE%", wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
-
-    // MQTT Status
-    send_template_chunk(req, &cursor, end, "%MQTT_STATUS%", mqtt_cfg.connected ? "Connected" : "Disconnected");
-
-    // LoRa Rx/Tx
-    snprintf(val_buf, sizeof(val_buf), "%u / %u", (unsigned int)stats.lora_rx_count, (unsigned int)stats.lora_tx_count);
-    send_template_chunk(req, &cursor, end, "%LORA_RX_TX%", val_buf);
-
-    // LoRa CRC
-    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_crc_err_count);
-    send_template_chunk(req, &cursor, end, "%LORA_CRC%", val_buf);
-
-    // LoRa Timeout
-    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_tx_timeout_count);
-    send_template_chunk(req, &cursor, end, "%LORA_TIMEOUT%", val_buf);
-
-    // LoRa Init Fail
-    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_init_fail_count);
-    send_template_chunk(req, &cursor, end, "%LORA_INIT_FAIL%", val_buf);
-
-    // MQTT Published
-    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.mqtt_pub_count);
-    send_template_chunk(req, &cursor, end, "%MQTT_PUB%", val_buf);
-
-    // LoRa Freq
+    // --- LoRa Diagnostics Tab ---
+    // 9. %FREQ%
     snprintf(val_buf, sizeof(val_buf), "%lu", (unsigned long)(lora_cfg.frequency_hz / 1000000));
     send_template_chunk(req, &cursor, end, "%FREQ%", val_buf);
 
-    // LoRa Power
+    // 10. %POWER%
     snprintf(val_buf, sizeof(val_buf), "%d", lora_cfg.power_dbm);
     send_template_chunk(req, &cursor, end, "%POWER%", val_buf);
 
-    // SF Options (Dynamic Heap allocation to save stack)
+    // 11. %LORA_RX_TX%
+    snprintf(val_buf, sizeof(val_buf), "%u / %u", (unsigned int)stats.lora_rx_count, (unsigned int)stats.lora_tx_count);
+    send_template_chunk(req, &cursor, end, "%LORA_RX_TX%", val_buf);
+
+    // 12. %LORA_CRC%
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_crc_err_count);
+    send_template_chunk(req, &cursor, end, "%LORA_CRC%", val_buf);
+
+    // 13. %LORA_TIMEOUT%
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_tx_timeout_count);
+    send_template_chunk(req, &cursor, end, "%LORA_TIMEOUT%", val_buf);
+
+    // 14. %LORA_INIT_FAIL%
+    snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_init_fail_count);
+    send_template_chunk(req, &cursor, end, "%LORA_INIT_FAIL%", val_buf);
+
+    // --- LoRa Config Tab ---
+    // 15. %FREQ% (Second occurrence in form)
+    snprintf(val_buf, sizeof(val_buf), "%lu", (unsigned long)(lora_cfg.frequency_hz / 1000000));
+    send_template_chunk(req, &cursor, end, "%FREQ%", val_buf);
+
+    // 16. %POWER% (Second occurrence in form)
+    snprintf(val_buf, sizeof(val_buf), "%d", lora_cfg.power_dbm);
+    send_template_chunk(req, &cursor, end, "%POWER%", val_buf);
+
+    // 17. %SF_OPTIONS%
     char *sf_buf = malloc(256);
     if (sf_buf) {
         sf_buf[0] = '\0';
@@ -162,18 +175,29 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         free(sf_buf);
     }
 
-    // MQTT Broker, Port, Client ID, Prefix
+    // --- MQTT Config Tab ---
+    // 18. %BROKER%
     send_template_chunk(req, &cursor, end, "%BROKER%", mqtt_cfg.broker[0] ? mqtt_cfg.broker : "");
+
+    // 19. %PORT%
     snprintf(val_buf, sizeof(val_buf), "%d", mqtt_cfg.port);
     send_template_chunk(req, &cursor, end, "%PORT%", val_buf);
+
+    // 20. %CLIENT_ID%
     send_template_chunk(req, &cursor, end, "%CLIENT_ID%", mqtt_cfg.client_id[0] ? mqtt_cfg.client_id : "");
+
+    // 21. %TOPIC_PREFIX%
     send_template_chunk(req, &cursor, end, "%TOPIC_PREFIX%", mqtt_cfg.topic_prefix[0] ? mqtt_cfg.topic_prefix : "");
 
-    // Wi-Fi SSID & Password
+    // --- Wi-Fi Config Tab ---
+    // 22. %SSID%
     send_template_chunk(req, &cursor, end, "%SSID%", wifi_cfg.sta_ssid[0] ? wifi_cfg.sta_ssid : "");
+
+    // 23. %PASSWORD%
     send_template_chunk(req, &cursor, end, "%PASSWORD%", wifi_cfg.sta_password[0] ? wifi_cfg.sta_password : "");
 
-    // System Logs Replacement
+    // --- System Logs ---
+    // 24. %LOGS%
     size_t log_alloc_size = LOG_MAX_ENTRIES * LOG_ENTRY_LEN;
     char *log_buf = malloc(log_alloc_size);
     if (log_buf) {
@@ -204,7 +228,6 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         cursor += to_send;
     }
 
-    // End response
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
