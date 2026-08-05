@@ -33,9 +33,9 @@ void led_status_task(void *pvParameters) {
 
             case LED_MODE_RAINBOW:
             default:
-                if (step == 0)      sk9822_set_color(led_cfg.r, 0, 0, led_cfg.brightness);
-                else if (step == 1) sk9822_set_color(0, led_cfg.g, 0, led_cfg.brightness);
-                else                sk9822_set_color(0, 0, led_cfg.b, led_cfg.brightness);
+                if (step == 0)      sk9822_set_color(30, 0, 0, led_cfg.brightness);
+                else if (step == 1) sk9822_set_color(0, 30, 0, led_cfg.brightness);
+                else                sk9822_set_color(0, 0, 30, led_cfg.brightness);
 
                 step = (step + 1) % 3;
                 break;
@@ -105,7 +105,7 @@ void app_main(void) {
 
     LOGI(TAG, "Free heap before network init: %d bytes", (unsigned int)esp_get_free_heap_size());
 
-    xTaskCreate(&network_init_task, "net_init", 2560, NULL, 5, NULL);
+    xTaskCreate(&network_init_task, "net_init", 4096, NULL, 5, NULL);
     xTaskCreate(&led_status_task, "led_task", 1024, NULL, 4, NULL);
     xTaskCreate(&lora_gateway_task, "lora_task", 3072, NULL, 3, NULL);
 

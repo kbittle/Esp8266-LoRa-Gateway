@@ -32,16 +32,38 @@ void app_log_add(const char *msg) {
     g_log_head = (g_log_head + 1) % LOG_MAX_ENTRIES;
 }
 
-/* Helper to replace placeholders dynamically in embedded HTML */
+/* Helper to replace placeholders dynamically in embedded HTML using RAM buffering */
 static void send_template_chunk(httpd_req_t *req, const char **cursor, const char *end, const char *token, const char *value) {
     const char *pos = strstr(*cursor, token);
     if (pos && pos < end) {
-        if (pos > *cursor) {
-            httpd_resp_send_chunk(req, *cursor, pos - *cursor);
+        size_t len = pos - *cursor;
+        
+        // Safely send the chunk prior to the token using a RAM buffer
+        while (len > 0) {
+            char chunk_buf[64];
+            size_t to_send = (len > sizeof(chunk_buf)) ? sizeof(chunk_buf) : len;
+            memcpy(chunk_buf, *cursor, to_send);
+            
+            httpd_resp_send_chunk(req, chunk_buf, to_send);
+            *cursor += to_send;
+            len -= to_send;
         }
-        httpd_resp_send_chunk(req, value, HTTPD_RESP_USE_STRLEN);
+
+        // Send the replacement dynamic string value
+        if (value && strlen(value) > 0) {
+            httpd_resp_send_chunk(req, value, HTTPD_RESP_USE_STRLEN);
+        }
         *cursor = pos + strlen(token);
     }
+}
+
+/* Helper to send HTTP 303 Redirect cleanly */
+static esp_err_t send_redirect(httpd_req_t *req, const char *location) {
+    const char *resp = "Redirecting...";
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", location);
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, resp, strlen(resp));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -65,7 +87,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
 
     const char *cursor = (const char *)index_html_start;
     const char *end = (const char *)index_html_end;
-    char val_buf[512];
+    char val_buf[256];
 
     // Uptime
     snprintf(val_buf, sizeof(val_buf), "%lld", (long long)(esp_timer_get_time() / 1000000));
@@ -126,15 +148,19 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     snprintf(val_buf, sizeof(val_buf), "%d", lora_cfg.power_dbm);
     send_template_chunk(req, &cursor, end, "%POWER%", val_buf);
 
-    // SF Options
-    char sf_buf[512] = {0};
-    for (int sf = 7; sf <= 12; sf++) {
-        char opt[64];
-        snprintf(opt, sizeof(opt), "<option value=\"%d\" %s>SF%d</option>",
-                 sf, (lora_cfg.sf == sf) ? "selected" : "", sf);
-        strcat(sf_buf, opt);
+    // SF Options (Dynamic Heap allocation to save stack)
+    char *sf_buf = malloc(256);
+    if (sf_buf) {
+        sf_buf[0] = '\0';
+        for (int sf = 7; sf <= 12; sf++) {
+            char opt[64];
+            snprintf(opt, sizeof(opt), "<option value=\"%d\" %s>SF%d</option>",
+                     sf, (lora_cfg.sf == sf) ? "selected" : "", sf);
+            strcat(sf_buf, opt);
+        }
+        send_template_chunk(req, &cursor, end, "%SF_OPTIONS%", sf_buf);
+        free(sf_buf);
     }
-    send_template_chunk(req, &cursor, end, "%SF_OPTIONS%", sf_buf);
 
     // MQTT Broker, Port, Client ID, Prefix
     send_template_chunk(req, &cursor, end, "%BROKER%", mqtt_cfg.broker[0] ? mqtt_cfg.broker : "");
@@ -147,23 +173,35 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     send_template_chunk(req, &cursor, end, "%SSID%", wifi_cfg.sta_ssid[0] ? wifi_cfg.sta_ssid : "");
     send_template_chunk(req, &cursor, end, "%PASSWORD%", wifi_cfg.sta_password[0] ? wifi_cfg.sta_password : "");
 
-    // Logs
-    char log_buf[LOG_MAX_ENTRIES * LOG_ENTRY_LEN] = {0};
-    bool empty = true;
-    int idx = g_log_head;
-    for (int i = 0; i < LOG_MAX_ENTRIES; i++) {
-        if (g_logs[idx][0] != '\0') {
-            strcat(log_buf, g_logs[idx]);
-            strcat(log_buf, "\n");
-            empty = false;
+    // System Logs Replacement
+    size_t log_alloc_size = LOG_MAX_ENTRIES * LOG_ENTRY_LEN;
+    char *log_buf = malloc(log_alloc_size);
+    if (log_buf) {
+        log_buf[0] = '\0';
+        bool empty = true;
+        int idx = g_log_head;
+        for (int i = 0; i < LOG_MAX_ENTRIES; i++) {
+            if (g_logs[idx][0] != '\0') {
+                strcat(log_buf, g_logs[idx]);
+                strcat(log_buf, "\n");
+                empty = false;
+            }
+            idx = (idx + 1) % LOG_MAX_ENTRIES;
         }
-        idx = (idx + 1) % LOG_MAX_ENTRIES;
+        send_template_chunk(req, &cursor, end, "%LOGS%", empty ? "System initialized." : log_buf);
+        free(log_buf);
+    } else {
+        send_template_chunk(req, &cursor, end, "%LOGS%", "System initialized.");
     }
-    send_template_chunk(req, &cursor, end, "%LOGS%", empty ? "System initialized." : log_buf);
 
     // Flush remaining HTML tail
-    if (cursor < end) {
-        httpd_resp_send_chunk(req, cursor, end - cursor);
+    while (cursor < end) {
+        char chunk_buf[64];
+        size_t len = end - cursor;
+        size_t to_send = (len > sizeof(chunk_buf)) ? sizeof(chunk_buf) : len;
+        memcpy(chunk_buf, cursor, to_send);
+        httpd_resp_send_chunk(req, chunk_buf, to_send);
+        cursor += to_send;
     }
 
     // End response
@@ -238,10 +276,7 @@ static esp_err_t save_led_handler(httpd_req_t *req) {
 
     LOGI(TAG, "LED settings updated via Webserver (mode: %d, RGB: %d,%d,%d)", cfg.mode, cfg.r, cfg.g, cfg.b);
 
-    httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/");
-    httpd_resp_send(req, NULL, 0);
-    return ESP_OK;
+    return send_redirect(req, "/");
 }
 
 static esp_err_t save_lora_handler(httpd_req_t *req) {
@@ -267,10 +302,7 @@ static esp_err_t save_lora_handler(httpd_req_t *req) {
 
     LOGI(TAG, "LoRa settings updated");
 
-    httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/");
-    httpd_resp_send(req, NULL, 0);
-    return ESP_OK;
+    return send_redirect(req, "/");
 }
 
 static esp_err_t save_mqtt_handler(httpd_req_t *req) {
@@ -292,10 +324,7 @@ static esp_err_t save_mqtt_handler(httpd_req_t *req) {
 
     LOGI(TAG, "MQTT settings updated");
 
-    httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/");
-    httpd_resp_send(req, NULL, 0);
-    return ESP_OK;
+    return send_redirect(req, "/");
 }
 
 static esp_err_t save_wifi_handler(httpd_req_t *req) {
@@ -310,19 +339,17 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
 
     config_set_wifi(&cfg);
 
-    wifi_config_t sta_config = {0};
-    strncpy((char*)sta_config.sta.ssid, cfg.sta_ssid, sizeof(sta_config.sta.ssid));
-    strncpy((char*)sta_config.sta.password, cfg.sta_password, sizeof(sta_config.sta.password));
+    wifi_config_t sta_config;
+    memset(&sta_config, 0, sizeof(wifi_config_t));
+    snprintf((char*)sta_config.sta.ssid, sizeof(sta_config.sta.ssid), "%s", cfg.sta_ssid);
+    snprintf((char*)sta_config.sta.password, sizeof(sta_config.sta.password), "%s", cfg.sta_password);
 
     esp_wifi_set_config(WIFI_IF_STA, &sta_config);
     esp_wifi_connect();
 
     LOGI(TAG, "Wi-Fi station connecting...");
 
-    httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/");
-    httpd_resp_send(req, NULL, 0);
-    return ESP_OK;
+    return send_redirect(req, "/");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -336,16 +363,14 @@ void wifi_init_apsta(void) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t ap_config = {
-        .ap = {
-            .ssid = "ESP8266-Gateway-Config",
-            .ssid_len = strlen("ESP8266-Gateway-Config"),
-            .channel = 1,
-            .password = "12345678",
-            .max_connection = 4,
-            .authmode = WIFI_AUTH_WPA2_PSK
-        },
-    };
+    wifi_config_t ap_config;
+    memset(&ap_config, 0, sizeof(wifi_config_t));
+    snprintf((char*)ap_config.ap.ssid, sizeof(ap_config.ap.ssid), "ESP8266-Gateway-Config");
+    ap_config.ap.ssid_len = strlen((char*)ap_config.ap.ssid);
+    ap_config.ap.channel = 1;
+    snprintf((char*)ap_config.ap.password, sizeof(ap_config.ap.password), "12345678");
+    ap_config.ap.max_connection = 4;
+    ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
@@ -357,7 +382,7 @@ void wifi_init_apsta(void) {
 httpd_handle_t start_webserver(void) {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.stack_size = 6144;
+    config.stack_size = 8192;
 
     if (httpd_start(&server, &config) == ESP_OK) {
         httpd_uri_t root_uri = { .uri = "/", .method = HTTP_GET, .handler = root_get_handler };
