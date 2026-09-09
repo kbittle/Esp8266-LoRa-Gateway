@@ -11,7 +11,7 @@
 static const char *TAG = "lora_driver";
 
 // -----------------------------------------------------------------------------
-// SX1276/77/78 register map (subset used by this driver)
+// SX1276/77/78 register map
 // -----------------------------------------------------------------------------
 #define REG_FIFO                 0x00
 #define REG_OP_MODE               0x01
@@ -88,10 +88,8 @@ static uint8_t lora_read_reg(uint8_t addr) {
 static void lora_write_reg(uint8_t addr, uint8_t value) {
     gpio_set_level(LORA_NSS_GPIO, 0);
 
-    WORD_ALIGNED_ATTR uint32_t tx_word = 0;
-    uint8_t *tx = (uint8_t *)&tx_word;
-    tx[0] = addr | 0x80; // MSB=1 -> write
-    tx[1] = value;
+    // Fixed shift order for ESP8266 little-endian memory layout
+    WORD_ALIGNED_ATTR uint32_t tx_word = ((uint32_t)(addr | 0x80) << 0) | ((uint32_t)value << 8);
 
     spi_trans_t trans = {0};
     trans.mosi = &tx_word;
@@ -184,7 +182,9 @@ bool lora_init(const lora_config_t *config) {
         return false;
     }
 
-    // 6. Sleep -> LoRa mode select
+    // 6. Force SLEEP mode to lock into LoRa Mode
+    lora_write_reg(REG_OP_MODE, MODE_SLEEP);
+    vTaskDelay(pdMS_TO_TICKS(10));
     lora_set_mode(MODE_SLEEP);
     vTaskDelay(pdMS_TO_TICKS(10));
     lora_set_mode(MODE_STDBY);
@@ -195,10 +195,10 @@ bool lora_init(const lora_config_t *config) {
     lora_write_reg(REG_FRF_MID, (uint8_t)(frf >> 8));
     lora_write_reg(REG_FRF_LSB, (uint8_t)(frf >> 0));
 
-    // 8. Configure PA
+    // 8. Configure PA with bound protection
     int8_t power = config->power_dbm;
     if (power > 20) power = 20;
-    if (power < 2) power = 2;
+    if (power < 2)  power = 2; // Clamp minimum power to 2 dBm
 
     if (power > 17) {
         lora_write_reg(REG_PA_DAC, 0x87);
@@ -245,10 +245,10 @@ bool lora_init(const lora_config_t *config) {
     lora_write_reg(REG_MAX_PAYLOAD_LENGTH, 0xFF);
 
     // 17. Sync word
-    lora_write_reg(REG_SYNC_WORD, 0x12);
+    lora_write_reg(REG_SYNC_WORD, 0x34);
 
     LOGI(TAG, "Ra-01H configured: Freq=%lu Hz, Power=%d dBm, SF=%d, BW=%d, CR=%d",
-             (unsigned long)config->frequency_hz, config->power_dbm, config->sf, config->bw, config->cr);
+             (unsigned long)config->frequency_hz, power, config->sf, config->bw, config->cr);
 
     return true;
 }
@@ -313,7 +313,6 @@ bool lora_receive_packet(uint8_t *buffer, uint8_t max_length, uint8_t *rx_length
 
         if (irq & IRQ_RX_DONE_MASK) {
             if (irq & IRQ_PAYLOAD_CRC_ERROR) {
-                LOGE(TAG, "Received packet CRC error!");
                 config_inc_crc_err();
                 lora_write_reg(REG_IRQ_FLAGS, IRQ_ALL_MASK);
                 lora_set_mode(MODE_STDBY);

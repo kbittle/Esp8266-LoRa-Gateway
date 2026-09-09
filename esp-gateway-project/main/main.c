@@ -65,12 +65,14 @@ void lora_gateway_task(void *pvParameters) {
     if (lora_init(&lora_cfg) && lora_check_connection()) {
         LOGI(TAG, "LoRa Gateway initialization complete.");
     } else {
-        LOGI(TAG, "LoRa Gateway initialization failed.");
+        LOGE(TAG, "LoRa Gateway initialization failed.");
+        vTaskDelete(NULL);
+        return;
     }
 
     // --- Transmit Packet Example ---
     const char *msg = "Hello World!";
-    if (lora_send_packet((const uint8_t*)msg, strlen(msg), 3000)) {
+    if (lora_send_packet((const uint8_t*)msg, strlen(msg), 10000)) {
         config_inc_tx();
     }
 
@@ -83,13 +85,13 @@ void lora_gateway_task(void *pvParameters) {
         uint8_t rx_buf[255] = {0};
         uint8_t rx_len = 0;
         
-        if (lora_receive_packet(rx_buf, sizeof(rx_buf), &rx_len, 3000)) {
+        if (lora_receive_packet(rx_buf, sizeof(rx_buf) - 1, &rx_len, 3000)) {
             rx_buf[rx_len] = '\0';
             config_inc_rx();
             LOGI(TAG, "Payload: %s", (char*)rx_buf);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 

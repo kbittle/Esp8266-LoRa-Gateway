@@ -70,8 +70,8 @@ typedef struct {
  */
 #define LORA_CONFIG_DEFAULT() {                             \
     .frequency_hz    = 915000000,                           \
-    .power_dbm       = 14,                                  \
-    .sf              = LORA_SF12,                           \
+    .power_dbm       = 2,                                   \
+    .sf              = LORA_SF7,                            \
     .bw              = LORA_BW_125_KHZ,                     \
     .cr              = LORA_CR_4_5,                         \
     .preamble_length = 8,                                   \
