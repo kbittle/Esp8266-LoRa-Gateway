@@ -2,7 +2,7 @@
 
 [![Build ESP8266 Gateway Firmware](https://github.com/kbittle/Esp8266-LoRa-Gateway/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/kbittle/Esp8266-LoRa-Gateway/actions/workflows/build.yml)
 
-Custom PCB and software for WiFi(ESP8266) to LoRa(Ra-01) gateway. This is meant to fit in a [DMB-4770 enclosure](https://www.digikey.com/en/products/detail/bud-industries/DMB-4770/2499326?gclsrc=aw.ds&gad_source=1&gad_campaignid=17922795960&gbraid=0AAAAADrbLliLALWqXMvqAjymSpm62XcV1&gclid=Cj0KCQjw94bTBhDQARIsAN3vv0ymIrAf8-c34imw-3O3CEBacBJsq8vE9WuR0ZiFMQMXCZOAnRCBhwAaAlsuEALw_wcB).
+Custom PCB and software for WiFi(ESP8266) to LoRa(Ra-01H) gateway. This is meant to fit in a [DMB-4770 enclosure](https://www.digikey.com/en/products/detail/bud-industries/DMB-4770/2499326?gclsrc=aw.ds&gad_source=1&gad_campaignid=17922795960&gbraid=0AAAAADrbLliLALWqXMvqAjymSpm62XcV1&gclid=Cj0KCQjw94bTBhDQARIsAN3vv0ymIrAf8-c34imw-3O3CEBacBJsq8vE9WuR0ZiFMQMXCZOAnRCBhwAaAlsuEALw_wcB).
 
 <img src="docs/pcb-3dview.png" alt="PCB" width="800">
 
@@ -14,7 +14,6 @@ Esp8266-LoRa-Gateway/
 ├── docs/                    # Datasheets, schematics, and reference manuals
 ├── esp-gateway-project/     # ESP8266 Project
 |    ├── build               # Build output folder
-|    ├── SWSD003             # Semtechs sx126x github library
 |    └── main                # Source files
 └── gerbers/                 # PCB Fab files
 ```
