@@ -6,6 +6,7 @@
 #include "esp_event.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "tcpip_adapter.h"
 #include "logger.h"
 #include "configuration.h"
 
@@ -14,6 +15,57 @@
 #endif
 
 static const char *TAG = "webserver";
+
+/* WiFi Event Handler */
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
+    if (event_base == WIFI_EVENT) {
+        switch (event_id) {
+            case WIFI_EVENT_STA_START:
+                LOGI(TAG, "Station started, connecting...");
+                esp_wifi_connect();
+                break;
+            case WIFI_EVENT_STA_CONNECTED: {
+                wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;
+                LOGI(TAG, "Station connected to AP: %s", event->ssid);
+                break;
+            }
+            case WIFI_EVENT_STA_DISCONNECTED: {
+                wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
+                LOGI(TAG, "Station disconnected from AP, reason: %d, retrying...", event->reason);
+                wifi_config_state_t cfg;
+                config_get_wifi(&cfg);
+                cfg.sta_connected = false;
+                snprintf(cfg.ip_addr, sizeof(cfg.ip_addr), "0.0.0.0");
+                config_set_wifi(&cfg);
+                esp_wifi_connect();
+                break;
+            }
+            case WIFI_EVENT_AP_STACONNECTED: {
+                wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *)event_data;
+                LOGI(TAG, "Station connected to SoftAP, AID: %d", event->aid);
+                break;
+            }
+            case WIFI_EVENT_AP_STADISCONNECTED: {
+                wifi_event_ap_stadisconnected_t *event = (wifi_event_ap_stadisconnected_t *)event_data;
+                LOGI(TAG, "Station disconnected from SoftAP, AID: %d", event->aid);
+                break;
+            }
+            default:
+                break;
+        }
+    } else if (event_base == IP_EVENT) {
+        if (event_id == IP_EVENT_STA_GOT_IP) {
+            ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+            LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+            wifi_config_state_t cfg;
+            config_get_wifi(&cfg);
+            cfg.sta_connected = true;
+            snprintf(cfg.ip_addr, sizeof(cfg.ip_addr), IPSTR, IP2STR(&event->ip_info.ip));
+            config_set_wifi(&cfg);
+            app_log_add("WiFi connected, got IP");
+        }
+    }
+}
 
 /* Standard ESP-IDF embedded file symbols */
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -90,26 +142,42 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     char val_buf[256];
 
     // --- System Status Card (Exact HTML Order) ---
-    // 1. %UPTIME%
-    snprintf(val_buf, sizeof(val_buf), "%lld", (long long)(esp_timer_get_time() / 1000000));
+    // 1. %GATEWAY_ID% (in title)
+    send_template_chunk(req, &cursor, end, "%GATEWAY_ID%", mqtt_cfg.gateway_id[0] ? mqtt_cfg.gateway_id : "01");
+
+    // 2. %UPTIME%
+    uint32_t uptime_sec = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    snprintf(val_buf, sizeof(val_buf), "%lu", (unsigned long)uptime_sec);
     send_template_chunk(req, &cursor, end, "%UPTIME%", val_buf);
 
-    // 2. %HEAP%
+    // 3. %HEAP%
     snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)(esp_get_free_heap_size() / 1024));
     send_template_chunk(req, &cursor, end, "%HEAP%", val_buf);
 
-    // 3. %WIFI_MODE%
-    send_template_chunk(req, &cursor, end, "%WIFI_MODE%", wifi_cfg.sta_connected ? "Station Connected" : "SoftAP Only");
+    // 4. %WIFI_STATUS_BOX%
+    if (wifi_cfg.sta_connected) {
+        send_template_chunk(req, &cursor, end, "%WIFI_STATUS_BOX%",
+            "<span style=\"color:#00ff00;\">Connected</span>");
+    } else {
+        send_template_chunk(req, &cursor, end, "%WIFI_STATUS_BOX%",
+            "<span style=\"color:#ff4444;\">Disconnected</span>");
+    }
 
-    // 4. %MQTT_STATUS%
-    send_template_chunk(req, &cursor, end, "%MQTT_STATUS%", mqtt_cfg.connected ? "Connected" : "Disconnected");
+    // 5. %MQTT_STATUS_BOX%
+    if (mqtt_cfg.connected) {
+        send_template_chunk(req, &cursor, end, "%MQTT_STATUS_BOX%",
+            "<span style=\"color:#00ff00;\">Connected</span>");
+    } else {
+        send_template_chunk(req, &cursor, end, "%MQTT_STATUS_BOX%",
+            "<span style=\"color:#ff4444;\">Disconnected</span>");
+    }
 
-    // 5. %MQTT_PUB%
+    // 6. %MQTT_PUB%
     snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.mqtt_pub_count);
     send_template_chunk(req, &cursor, end, "%MQTT_PUB%", val_buf);
 
     // --- RGB LED Control Card ---
-    // 6. %LED_MODE_OPTIONS%
+    // 7. %LED_MODE_OPTIONS%
     snprintf(val_buf, sizeof(val_buf),
              "<option value=\"0\" %s>Off</option>"
              "<option value=\"1\" %s>Solid</option>"
@@ -119,50 +187,50 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
              (led_cfg.mode == LED_MODE_RAINBOW) ? "selected" : "");
     send_template_chunk(req, &cursor, end, "%LED_MODE_OPTIONS%", val_buf);
 
-    // 7. %LED_HEX%
+    // 8. %LED_HEX%
     snprintf(val_buf, sizeof(val_buf), "#%02X%02X%02X", led_cfg.r, led_cfg.g, led_cfg.b);
     send_template_chunk(req, &cursor, end, "%LED_HEX%", val_buf);
 
-    // 8. %BRIGHTNESS%
+    // 9. %BRIGHTNESS%
     snprintf(val_buf, sizeof(val_buf), "%u", led_cfg.brightness);
     send_template_chunk(req, &cursor, end, "%BRIGHTNESS%", val_buf);
 
     // --- LoRa Diagnostics Tab ---
-    // 9. %FREQ%
+    // 10. %FREQ%
     snprintf(val_buf, sizeof(val_buf), "%lu", (unsigned long)(lora_cfg.frequency_hz / 1000000));
     send_template_chunk(req, &cursor, end, "%FREQ%", val_buf);
 
-    // 10. %POWER%
+    // 11. %POWER%
     snprintf(val_buf, sizeof(val_buf), "%d", lora_cfg.power_dbm);
     send_template_chunk(req, &cursor, end, "%POWER%", val_buf);
 
-    // 11. %LORA_RX_TX%
+    // 12. %LORA_RX_TX%
     snprintf(val_buf, sizeof(val_buf), "%u / %u", (unsigned int)stats.lora_rx_count, (unsigned int)stats.lora_tx_count);
     send_template_chunk(req, &cursor, end, "%LORA_RX_TX%", val_buf);
 
-    // 12. %LORA_CRC%
+    // 13. %LORA_CRC%
     snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_crc_err_count);
     send_template_chunk(req, &cursor, end, "%LORA_CRC%", val_buf);
 
-    // 13. %LORA_TIMEOUT%
+    // 14. %LORA_TIMEOUT%
     snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_tx_timeout_count);
     send_template_chunk(req, &cursor, end, "%LORA_TIMEOUT%", val_buf);
 
-    // 14. %LORA_INIT_FAIL%
+    // 15. %LORA_INIT_FAIL%
     snprintf(val_buf, sizeof(val_buf), "%u", (unsigned int)stats.lora_init_fail_count);
     send_template_chunk(req, &cursor, end, "%LORA_INIT_FAIL%", val_buf);
 
     // --- LoRa Config Tab ---
-    // 15. %FREQ% (Second occurrence in form)
+    // 16. %FREQ% (Second occurrence in form)
     snprintf(val_buf, sizeof(val_buf), "%lu", (unsigned long)(lora_cfg.frequency_hz / 1000000));
     send_template_chunk(req, &cursor, end, "%FREQ%", val_buf);
 
-    // 16. %POWER% (Second occurrence in form)
+    // 17. %POWER% (Second occurrence in form)
     snprintf(val_buf, sizeof(val_buf), "%d", lora_cfg.power_dbm);
     send_template_chunk(req, &cursor, end, "%POWER%", val_buf);
 
-    // 17. %SF_OPTIONS%
-    char *sf_buf = malloc(256);
+    // 18. %SF_OPTIONS%
+    char *sf_buf = malloc(512);
     if (sf_buf) {
         sf_buf[0] = '\0';
         for (int sf = 7; sf <= 12; sf++) {
@@ -175,29 +243,108 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         free(sf_buf);
     }
 
+    // 19. %BW_OPTIONS%
+    char *bw_buf = malloc(512);
+    if (bw_buf) {
+        bw_buf[0] = '\0';
+        struct { int val; const char *label; } bw_list[] = {
+            {0, "7.8 kHz"}, {1, "10.4 kHz"}, {2, "15.6 kHz"}, {3, "20.8 kHz"},
+            {4, "31.25 kHz"}, {5, "41.7 kHz"}, {6, "62.5 kHz"},
+            {7, "125 kHz"}, {8, "250 kHz"}, {9, "500 kHz"}
+        };
+        for (int i = 0; i < 10; i++) {
+            char opt[64];
+            snprintf(opt, sizeof(opt), "<option value=\"%d\" %s>%s</option>",
+                     bw_list[i].val, (lora_cfg.bw == bw_list[i].val) ? "selected" : "", bw_list[i].label);
+            strcat(bw_buf, opt);
+        }
+        send_template_chunk(req, &cursor, end, "%BW_OPTIONS%", bw_buf);
+        free(bw_buf);
+    }
+
+    // 20. %CR_OPTIONS%
+    char *cr_buf = malloc(512);
+    if (cr_buf) {
+        cr_buf[0] = '\0';
+        struct { int val; const char *label; } cr_list[] = {
+            {1, "4/5"}, {2, "4/6"}, {3, "4/7"}, {4, "4/8"}
+        };
+        for (int i = 0; i < 4; i++) {
+            char opt[64];
+            snprintf(opt, sizeof(opt), "<option value=\"%d\" %s>%s</option>",
+                     cr_list[i].val, (lora_cfg.cr == cr_list[i].val) ? "selected" : "", cr_list[i].label);
+            strcat(cr_buf, opt);
+        }
+        send_template_chunk(req, &cursor, end, "%CR_OPTIONS%", cr_buf);
+        free(cr_buf);
+    }
+
+    // 21. %PREAMBLE%
+    snprintf(val_buf, sizeof(val_buf), "%u", lora_cfg.preamble_length);
+    send_template_chunk(req, &cursor, end, "%PREAMBLE%", val_buf);
+
+    // 22. %CRC_OPTIONS%
+    char *crc_buf = malloc(256);
+    if (crc_buf) {
+        snprintf(crc_buf, 256,
+                 "<option value=\"1\" %s>Enabled</option>"
+                 "<option value=\"0\" %s>Disabled</option>",
+                 (lora_cfg.crc_on) ? "selected" : "",
+                 (!lora_cfg.crc_on) ? "selected" : "");
+        send_template_chunk(req, &cursor, end, "%CRC_OPTIONS%", crc_buf);
+        free(crc_buf);
+    }
+
     // --- MQTT Config Tab ---
-    // 18. %BROKER%
+    // 19. %BROKER%
     send_template_chunk(req, &cursor, end, "%BROKER%", mqtt_cfg.broker[0] ? mqtt_cfg.broker : "");
 
-    // 19. %PORT%
+    // 20. %PORT%
     snprintf(val_buf, sizeof(val_buf), "%d", mqtt_cfg.port);
     send_template_chunk(req, &cursor, end, "%PORT%", val_buf);
 
-    // 20. %CLIENT_ID%
+    // 21. %CLIENT_ID%
     send_template_chunk(req, &cursor, end, "%CLIENT_ID%", mqtt_cfg.client_id[0] ? mqtt_cfg.client_id : "");
 
-    // 21. %TOPIC_PREFIX%
+    // 22. %GATEWAY_ID% (Second occurrence in form)
+    send_template_chunk(req, &cursor, end, "%GATEWAY_ID%", mqtt_cfg.gateway_id[0] ? mqtt_cfg.gateway_id : "01");
+
+    // 23. %USERNAME%
+    send_template_chunk(req, &cursor, end, "%USERNAME%", mqtt_cfg.username[0] ? mqtt_cfg.username : "");
+
+    // 24. %PASSWORD%
+    send_template_chunk(req, &cursor, end, "%PASSWORD%", mqtt_cfg.password[0] ? mqtt_cfg.password : "");
+
+    // 25. %TOPIC_PREFIX%
     send_template_chunk(req, &cursor, end, "%TOPIC_PREFIX%", mqtt_cfg.topic_prefix[0] ? mqtt_cfg.topic_prefix : "");
 
+    // 26. %MQTT_BUTTON%
+    if (mqtt_cfg.connected) {
+        send_template_chunk(req, &cursor, end, "%MQTT_BUTTON%",
+            "<button type=\"submit\" class=\"submit-btn\" style=\"background:#e74c3c;\" formaction=\"/disconnect_mqtt\">Disconnect MQTT</button>");
+    } else {
+        send_template_chunk(req, &cursor, end, "%MQTT_BUTTON%",
+            "<button type=\"submit\" class=\"submit-btn\">Save MQTT Settings</button>");
+    }
+
     // --- Wi-Fi Config Tab ---
-    // 22. %SSID%
+    // 27. %SSID%
     send_template_chunk(req, &cursor, end, "%SSID%", wifi_cfg.sta_ssid[0] ? wifi_cfg.sta_ssid : "");
 
-    // 23. %PASSWORD%
+    // 28. %PASSWORD%
     send_template_chunk(req, &cursor, end, "%PASSWORD%", wifi_cfg.sta_password[0] ? wifi_cfg.sta_password : "");
 
+    // 29. %WIFI_BUTTON%
+    if (wifi_cfg.sta_connected) {
+        send_template_chunk(req, &cursor, end, "%WIFI_BUTTON%",
+            "<button type=\"submit\" class=\"submit-btn\" style=\"background:#e74c3c;\" formaction=\"/disconnect_wifi\">Disconnect Wi-Fi</button>");
+    } else {
+        send_template_chunk(req, &cursor, end, "%WIFI_BUTTON%",
+            "<button type=\"submit\" class=\"submit-btn\">Connect Wi-Fi</button>");
+    }
+
     // --- System Logs ---
-    // 24. %LOGS%
+    // 30. %LOGS%
     size_t log_alloc_size = LOG_MAX_ENTRIES * LOG_ENTRY_LEN;
     char *log_buf = malloc(log_alloc_size);
     if (log_buf) {
@@ -236,6 +383,28 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
 /*                               Form Parsers                                 */
 /* -------------------------------------------------------------------------- */
 
+static void url_decode(const char *src, char *dst, size_t max_len) {
+    size_t i = 0, j = 0;
+    while (src[i] != '\0' && j < max_len - 1) {
+        if (src[i] == '%' && src[i+1] && src[i+2]) {
+            char hex[3] = {src[i+1], src[i+2], '\0'};
+            unsigned int val;
+            if (sscanf(hex, "%2x", &val) == 1) {
+                dst[j++] = (char)val;
+                i += 3;
+            } else {
+                dst[j++] = src[i++];
+            }
+        } else if (src[i] == '+') {
+            dst[j++] = ' ';
+            i++;
+        } else {
+            dst[j++] = src[i++];
+        }
+    }
+    dst[j] = '\0';
+}
+
 static void parse_form_str(const char *body, const char *key, char *out, size_t max_len) {
     if (!body || !key || !out) return;
     char needle[32];
@@ -244,10 +413,12 @@ static void parse_form_str(const char *body, const char *key, char *out, size_t 
     if (pos) {
         pos += strlen(needle);
         size_t i = 0;
-        while (*pos != '\0' && *pos != '&' && i < max_len - 1) {
-            out[i++] = *pos++;
+        char encoded[128] = {0};
+        while (*pos != '\0' && *pos != '&' && i < sizeof(encoded) - 1) {
+            encoded[i++] = *pos++;
         }
-        out[i] = '\0';
+        encoded[i] = '\0';
+        url_decode(encoded, out, max_len);
     }
 }
 
@@ -312,14 +483,26 @@ static esp_err_t save_lora_handler(httpd_req_t *req) {
     int mhz = 0;
     int power = 0;
     int sf = 0;
+    int bw = 0;
+    int cr = 0;
+    int preamble = 0;
+    int crc = 0;
 
     if (strstr(buf, "frequency=")) sscanf(strstr(buf, "frequency="), "frequency=%d", &mhz);
     if (strstr(buf, "power="))     sscanf(strstr(buf, "power="), "power=%d", &power);
     if (strstr(buf, "sf="))        sscanf(strstr(buf, "sf="), "sf=%d", &sf);
+    if (strstr(buf, "bw="))        sscanf(strstr(buf, "bw="), "bw=%d", &bw);
+    if (strstr(buf, "cr="))        sscanf(strstr(buf, "cr="), "cr=%d", &cr);
+    if (strstr(buf, "preamble="))  sscanf(strstr(buf, "preamble="), "preamble=%d", &preamble);
+    if (strstr(buf, "crc="))       sscanf(strstr(buf, "crc="), "crc=%d", &crc);
 
     if (mhz > 0) cfg.frequency_hz = (uint32_t)mhz * 1000000;
     if (power != 0) cfg.power_dbm = (int8_t)power;
     if (sf >= 6 && sf <= 12) cfg.sf = (lora_sf_t)sf;
+    if (bw >= 0 && bw <= 9) cfg.bw = (lora_bw_t)bw;
+    if (cr >= 1 && cr <= 4) cfg.cr = (lora_cr_t)cr;
+    if (preamble > 0) cfg.preamble_length = (uint16_t)preamble;
+    cfg.crc_on = (crc == 1);
 
     config_set_lora(&cfg);
 
@@ -337,6 +520,9 @@ static esp_err_t save_mqtt_handler(httpd_req_t *req) {
 
     parse_form_str(buf, "broker", cfg.broker, sizeof(cfg.broker));
     parse_form_str(buf, "client_id", cfg.client_id, sizeof(cfg.client_id));
+    parse_form_str(buf, "gateway_id", cfg.gateway_id, sizeof(cfg.gateway_id));
+    parse_form_str(buf, "username", cfg.username, sizeof(cfg.username));
+    parse_form_str(buf, "password", cfg.password, sizeof(cfg.password));
     parse_form_str(buf, "topic_prefix", cfg.topic_prefix, sizeof(cfg.topic_prefix));
 
     char port_str[8] = {0};
@@ -366,11 +552,39 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
     memset(&sta_config, 0, sizeof(wifi_config_t));
     snprintf((char*)sta_config.sta.ssid, sizeof(sta_config.sta.ssid), "%s", cfg.sta_ssid);
     snprintf((char*)sta_config.sta.password, sizeof(sta_config.sta.password), "%s", cfg.sta_password);
+    sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    sta_config.sta.pmf_cfg.capable = true;
+    sta_config.sta.pmf_cfg.required = false;
 
     esp_wifi_set_config(WIFI_IF_STA, &sta_config);
     esp_wifi_connect();
 
-    LOGI(TAG, "Wi-Fi station connecting...");
+    LOGI(TAG, "Wi-Fi station connecting to: %s", cfg.sta_ssid);
+
+    return send_redirect(req, "/");
+}
+
+static esp_err_t disconnect_wifi_handler(httpd_req_t *req) {
+    esp_wifi_disconnect();
+
+    wifi_config_state_t cfg;
+    config_get_wifi(&cfg);
+    cfg.sta_connected = false;
+    snprintf(cfg.ip_addr, sizeof(cfg.ip_addr), "0.0.0.0");
+    config_set_wifi(&cfg);
+
+    LOGI(TAG, "Wi-Fi station disconnected by user");
+
+    return send_redirect(req, "/");
+}
+
+static esp_err_t disconnect_mqtt_handler(httpd_req_t *req) {
+    mqtt_config_t cfg;
+    config_get_mqtt(&cfg);
+    cfg.connected = false;
+    config_set_mqtt(&cfg);
+
+    LOGI(TAG, "MQTT disconnected by user");
 
     return send_redirect(req, "/");
 }
@@ -382,9 +596,13 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
 void wifi_init_apsta(void) {
     tcpip_adapter_init();
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(tcpip_adapter_set_default_wifi_handlers());
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
     wifi_config_t ap_config;
     memset(&ap_config, 0, sizeof(wifi_config_t));
@@ -395,11 +613,24 @@ void wifi_init_apsta(void) {
     ap_config.ap.max_connection = 4;
     ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
 
+    wifi_config_state_t sta_cfg;
+    config_get_wifi(&sta_cfg);
+    wifi_config_t sta_config;
+    memset(&sta_config, 0, sizeof(wifi_config_t));
+    if (sta_cfg.sta_ssid[0] != '\0') {
+        snprintf((char*)sta_config.sta.ssid, sizeof(sta_config.sta.ssid), "%s", sta_cfg.sta_ssid);
+        snprintf((char*)sta_config.sta.password, sizeof(sta_config.sta.password), "%s", sta_cfg.sta_password);
+    }
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    LOGI(TAG, "Wi-Fi APSTA initialized.");
+    LOGI(TAG, "Wi-Fi APSTA initialized. AP SSID: %s", ap_config.ap.ssid);
+    if (sta_cfg.sta_ssid[0] != '\0') {
+        LOGI(TAG, "Station will connect to: %s", sta_cfg.sta_ssid);
+    }
 }
 
 httpd_handle_t start_webserver(void) {
@@ -422,6 +653,12 @@ httpd_handle_t start_webserver(void) {
 
         httpd_uri_t wifi_uri = { .uri = "/save_wifi", .method = HTTP_POST, .handler = save_wifi_handler };
         httpd_register_uri_handler(server, &wifi_uri);
+
+        httpd_uri_t disconnect_wifi_uri = { .uri = "/disconnect_wifi", .method = HTTP_POST, .handler = disconnect_wifi_handler };
+        httpd_register_uri_handler(server, &disconnect_wifi_uri);
+
+        httpd_uri_t disconnect_mqtt_uri = { .uri = "/disconnect_mqtt", .method = HTTP_POST, .handler = disconnect_mqtt_handler };
+        httpd_register_uri_handler(server, &disconnect_mqtt_uri);
 
         LOGI(TAG, "Webserver started.");
         return server;

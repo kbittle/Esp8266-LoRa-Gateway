@@ -9,6 +9,7 @@
 #include "sk9822.h"
 #include "lora.h"
 #include "webserver.h"
+#include "mqtt_manager.h"
 #include "logger.h"
 #include "configuration.h"
 
@@ -89,9 +90,25 @@ void lora_gateway_task(void *pvParameters) {
             rx_buf[rx_len] = '\0';
             config_inc_rx();
             LOGI(TAG, "Payload: %s", (char*)rx_buf);
+
+            // Publish to MQTT if connected
+            if (mqtt_client_is_connected()) {
+                int16_t rssi = 0;
+                int8_t snr = 0;
+                mqtt_client_publish_lora_packet(rx_buf, rx_len, rssi, snr);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void mqtt_status_task(void *pvParameters) {
+    while (1) {
+        if (mqtt_client_is_connected()) {
+            mqtt_client_publish_status();
+        }
+        vTaskDelay(pdMS_TO_TICKS(30000)); // Publish status every 30 seconds
     }
 }
 
@@ -104,12 +121,15 @@ void app_main(void) {
     ESP_ERROR_CHECK(ret);
 
     config_init();
+    mqtt_client_init();
 
     LOGI(TAG, "Free heap before network init: %d bytes", (unsigned int)esp_get_free_heap_size());
 
     xTaskCreate(&network_init_task, "net_init", 4096, NULL, 5, NULL);
     xTaskCreate(&led_status_task, "led_task", 1024, NULL, 4, NULL);
     xTaskCreate(&lora_gateway_task, "lora_task", 3072, NULL, 3, NULL);
+    xTaskCreate(&mqtt_task, "mqtt_task", 4096, NULL, 3, NULL);
+    xTaskCreate(&mqtt_status_task, "mqtt_status", 4096, NULL, 2, NULL);
 
     LOGI(TAG, "Free heap after tasks created: %d bytes", (unsigned int)esp_get_free_heap_size());
 

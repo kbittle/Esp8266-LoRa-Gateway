@@ -44,3 +44,73 @@ The PCB bridges the **ESP8266**, an **Ai-Thinker Ra-01H LoRa Module** (SX127X), 
 * **💻 [SW Dev Environment Setup](docs/build-instructions.md)** — Build instructions
 * **⚡ [FW Loading Instructions](docs/flash-instructions.md)** — Firmware Loading instructions
 
+## 📡 MQTT Topics
+
+Base topic: `lora/gateway/<gateway_id>/` (default: `lora/gateway/01/`)
+
+Configure `gateway_id` in the web UI (MQTT Config tab).
+
+### Published by Gateway
+
+| Topic | Direction | Description | Retained |
+|-------|-----------|-------------|:--------:|
+| `status` | GW → Broker | System status (uptime, heap, wifi, LoRa stats) | No |
+| `status/connection` | GW → Broker | `online`/`offline` (LWT) | **Yes** |
+| `rx` | GW → Broker | Received LoRa packet (hex payload, rssi, snr, len, ts) | No |
+| `config/get/response` | GW → Broker | Full or partial config response | No |
+
+### Subscribed by Gateway
+
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `config/set` | Broker → GW | Partial config update (JSON) |
+| `cmd/+` | Broker → GW | Commands: `reboot`, `factory_reset` |
+
+### Example Payloads
+
+**Status** (published every 30s):
+```json
+{
+  "uptime": 3600,
+  "heap": 42,
+  "wifi_connected": true,
+  "ip": "192.168.1.50",
+  "lora_freq": 915,
+  "lora_power": 14,
+  "lora_sf": 7,
+  "rx_count": 120,
+  "tx_count": 15,
+  "crc_err": 2,
+  "tx_timeout": 0,
+  "init_fail": 0,
+  "mqtt_pub": 120
+}
+```
+
+**RX Packet**:
+```json
+{
+  "payload": "48656C6C6F",
+  "rssi": -42,
+  "snr": 9,
+  "len": 5,
+  "ts": 1700000000
+}
+```
+
+**Config Set** (send to `lora/gateway/01/config/set`):
+```json
+{ "lora": { "sf": 9, "power": 20 } }
+```
+
+**Commands** (send to `lora/gateway/01/cmd/reboot`):
+- `reboot` — Restart the gateway
+- `factory_reset` — Reset to defaults (not yet implemented)
+
+### Config Sections
+
+Request specific config by subscribing to `config/get/response` and publishing to `config/get` with:
+```json
+{ "section": "lora|mqtt|wifi|led|all" }
+```
+
