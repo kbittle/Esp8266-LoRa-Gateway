@@ -339,6 +339,8 @@ bool mqtt_client_publish_status(void) {
     if (ret >= sizeof(json)) ret = sizeof(json) - 1;
     json[ret] = '\0';
 
+    LOGD(TAG, "Publishing status to %s: %s", topic, json);
+
     int msg_id = esp_mqtt_client_publish(g_mqtt_client, topic, json, 0, 1, true);
     if (msg_id < 0) {
         LOGE(TAG, "Failed to publish status");

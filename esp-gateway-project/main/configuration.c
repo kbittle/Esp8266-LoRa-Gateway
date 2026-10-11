@@ -10,6 +10,8 @@ static SemaphoreHandle_t g_config_mutex = NULL;
 
 static esp_err_t config_nvs_load_wifi(void);
 static esp_err_t config_nvs_save_wifi(void);
+static esp_err_t config_nvs_load_mqtt(void);
+static esp_err_t config_nvs_save_mqtt(void);
 
 // In-RAM System State Definitions
 static led_config_t g_led_cfg = {
@@ -47,6 +49,7 @@ void config_init(void) {
         g_config_mutex = xSemaphoreCreateMutex();
     }
     config_nvs_load_wifi();
+    config_nvs_load_mqtt();
 }
 
 void config_get_led(led_config_t *out_cfg) {
@@ -80,13 +83,6 @@ void config_set_lora(const lora_config_t *in_cfg) {
 void config_get_mqtt(mqtt_config_t *out_cfg) {
     if (xSemaphoreTake(g_config_mutex, portMAX_DELAY) == pdTRUE) {
         *out_cfg = g_mqtt_cfg;
-        xSemaphoreGive(g_config_mutex);
-    }
-}
-
-void config_set_mqtt(const mqtt_config_t *in_cfg) {
-    if (xSemaphoreTake(g_config_mutex, portMAX_DELAY) == pdTRUE) {
-        g_mqtt_cfg = *in_cfg;
         xSemaphoreGive(g_config_mutex);
     }
 }
@@ -139,6 +135,84 @@ void config_set_wifi(const wifi_config_state_t *in_cfg) {
         xSemaphoreGive(g_config_mutex);
     }
     config_nvs_save_wifi();
+}
+
+void config_set_mqtt(const mqtt_config_t *in_cfg) {
+    if (xSemaphoreTake(g_config_mutex, portMAX_DELAY) == pdTRUE) {
+        g_mqtt_cfg = *in_cfg;
+        xSemaphoreGive(g_config_mutex);
+    }
+    config_nvs_save_mqtt();
+}
+
+static esp_err_t config_nvs_load_mqtt(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    size_t broker_len = sizeof(g_mqtt_cfg.broker);
+    size_t client_id_len = sizeof(g_mqtt_cfg.client_id);
+    size_t username_len = sizeof(g_mqtt_cfg.username);
+    size_t password_len = sizeof(g_mqtt_cfg.password);
+    size_t gateway_id_len = sizeof(g_mqtt_cfg.gateway_id);
+    size_t topic_prefix_len = sizeof(g_mqtt_cfg.topic_prefix);
+
+    err = nvs_get_str(handle, "mqtt_broker", g_mqtt_cfg.broker, &broker_len);
+    if (err == ESP_OK) {
+        err = nvs_get_str(handle, "mqtt_client_id", g_mqtt_cfg.client_id, &client_id_len);
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_str(handle, "mqtt_username", g_mqtt_cfg.username, &username_len);
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_str(handle, "mqtt_password", g_mqtt_cfg.password, &password_len);
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_str(handle, "mqtt_gateway_id", g_mqtt_cfg.gateway_id, &gateway_id_len);
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_str(handle, "mqtt_topic_prefix", g_mqtt_cfg.topic_prefix, &topic_prefix_len);
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_u16(handle, "mqtt_port", &g_mqtt_cfg.port);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+static esp_err_t config_nvs_save_mqtt(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_set_str(handle, "mqtt_broker", g_mqtt_cfg.broker);
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, "mqtt_client_id", g_mqtt_cfg.client_id);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, "mqtt_username", g_mqtt_cfg.username);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, "mqtt_password", g_mqtt_cfg.password);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, "mqtt_gateway_id", g_mqtt_cfg.gateway_id);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, "mqtt_topic_prefix", g_mqtt_cfg.topic_prefix);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u16(handle, "mqtt_port", g_mqtt_cfg.port);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
 }
 
 void config_get_stats(gateway_stats_t *out_stats) {

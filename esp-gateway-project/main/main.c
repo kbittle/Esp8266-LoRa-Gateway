@@ -15,9 +15,26 @@
 
 static const char *TAG = "gateway_main";
 
+static void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v, uint8_t *r, uint8_t *g, uint8_t *b) {
+    uint8_t region = h / 43;
+    uint8_t remainder = (h - (region * 43)) * 6;
+    uint8_t p = (v * (255 - s)) >> 8;
+    uint8_t q = (v * (255 - ((s * remainder) >> 8))) >> 8;
+    uint8_t t = (v * (255 - ((s * (255 - remainder)) >> 8))) >> 8;
+
+    switch (region) {
+        case 0: *r = v; *g = t; *b = p; break;
+        case 1: *r = q; *g = v; *b = p; break;
+        case 2: *r = p; *g = v; *b = t; break;
+        case 3: *r = p; *g = q; *b = v; break;
+        case 4: *r = t; *g = p; *b = v; break;
+        default: *r = v; *g = p; *b = q; break;
+    }
+}
+
 void led_status_task(void *pvParameters) {
     sk9822_init();
-    uint8_t step = 0;
+    uint16_t hue = 0;
     
     while (1) {
         led_config_t led_cfg;
@@ -33,16 +50,16 @@ void led_status_task(void *pvParameters) {
                 break;
 
             case LED_MODE_RAINBOW:
-            default:
-                if (step == 0)      sk9822_set_color(30, 0, 0, led_cfg.brightness);
-                else if (step == 1) sk9822_set_color(0, 30, 0, led_cfg.brightness);
-                else                sk9822_set_color(0, 0, 30, led_cfg.brightness);
-
-                step = (step + 1) % 3;
+            default: {
+                uint8_t r, g, b;
+                hsv_to_rgb(hue, 255, led_cfg.brightness, &r, &g, &b);
+                sk9822_set_color(r, g, b, led_cfg.brightness);
+                hue = (hue + 5) % 256;
                 break;
+            }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
