@@ -14,6 +14,12 @@
     .stat-box h3 { margin: 0; font-size: 13px; color: #00fff5; border: none; padding: 0; }
     .stat-box p { margin: 5px 0 0; font-size: 16px; font-weight: bold; }
     
+    .status-rows { display: flex; flex-direction: column; gap: 8px; }
+    .status-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #0f3460; }
+    .status-row:last-child { border-bottom: none; }
+    .status-label { color: #00fff5; font-size: 14px; }
+    .status-value { font-weight: bold; font-size: 14px; text-align: right; }
+    
     /* Top Row Layout: Side-by-Side Status & LED */
     .top-row { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; }
     .top-row .card { margin-bottom: 0; }
@@ -75,19 +81,19 @@
 </head>
 <body>
 <div class="container">
-  <h1>LoRa to MQTT Gateway</h1>
+  <h1>LoRa to MQTT Gateway <span style="color:#888;font-weight:normal;font-size:0.7em;">#%GATEWAY_ID%</span></h1>
 
   <!-- Top Side-by-Side Flex Layout -->
   <div class="top-row">
     <!-- System Overview Card -->
     <div class="card status-card">
       <h2>System Status</h2>
-      <div class="grid">
-        <div class="stat-box"><h3>Uptime</h3><p>%UPTIME% s</p></div>
-        <div class="stat-box"><h3>Free Heap</h3><p>%HEAP% KB</p></div>
-        <div class="stat-box"><h3>Wi-Fi</h3><p>%WIFI_MODE%</p></div>
-        <div class="stat-box"><h3>MQTT</h3><p>%MQTT_STATUS%</p></div>
-        <div class="stat-box"><h3>Published</h3><p>%MQTT_PUB%</p></div>
+      <div class="status-rows">
+        <div class="status-row"><span class="status-label">Uptime</span><span class="status-value">%UPTIME% s</span></div>
+        <div class="status-row"><span class="status-label">Free Heap</span><span class="status-value">%HEAP% KB</span></div>
+        <div class="status-row"><span class="status-label">Wi-Fi</span><span class="status-value">%WIFI_STATUS_BOX%</span></div>
+        <div class="status-row"><span class="status-label">MQTT</span><span class="status-value">%MQTT_STATUS_BOX%</span></div>
+        <div class="status-row"><span class="status-label">Published</span><span class="status-value">%MQTT_PUB%</span></div>
       </div>
     </div>
 
@@ -150,6 +156,19 @@
         <select name="sf">
           %SF_OPTIONS%
         </select>
+        <label>Bandwidth</label>
+        <select name="bw">
+          %BW_OPTIONS%
+        </select>
+        <label>Coding Rate</label>
+        <select name="cr">
+          %CR_OPTIONS%
+        </select>
+        <label>Preamble Length</label><input type="number" name="preamble" value="%PREAMBLE%">
+        <label>CRC</label>
+        <select name="crc">
+          %CRC_OPTIONS%
+        </select>
         <button type="submit" class="submit-btn">Save LoRa Settings</button>
       </form>
     </div>
@@ -157,22 +176,25 @@
     <!-- 3. MQTT Config Tab -->
     <div id="MqttConfig" class="tab-content">
       <h2>MQTT Configuration</h2>
-      <form action="/save_mqtt" method="POST">
+      <form action="/save_mqtt" method="POST" id="mqtt-form">
         <label>Broker Address</label><input type="text" name="broker" value="%BROKER%">
         <label>Port</label><input type="number" name="port" value="%PORT%">
         <label>Client ID</label><input type="text" name="client_id" value="%CLIENT_ID%">
+        <label>Gateway ID</label><input type="text" name="gateway_id" value="%GATEWAY_ID%">
+        <label>Username</label><input type="text" name="username" value="%USERNAME%">
+        <label>Password</label><input type="password" name="password" value="%PASSWORD%">
         <label>Topic Prefix</label><input type="text" name="topic_prefix" value="%TOPIC_PREFIX%">
-        <button type="submit" class="submit-btn">Save MQTT Settings</button>
+        %MQTT_BUTTON%
       </form>
     </div>
 
     <!-- 4. Wi-Fi Config Tab -->
     <div id="WifiConfig" class="tab-content">
       <h2>Wi-Fi Configuration</h2>
-      <form action="/save_wifi" method="POST">
+      <form action="/save_wifi" method="POST" id="wifi-form">
         <label>Station SSID</label><input type="text" name="ssid" value="%SSID%">
         <label>Station Password</label><input type="password" name="password" value="%PASSWORD%">
-        <button type="submit" class="submit-btn">Connect Wi-Fi</button>
+        %WIFI_BUTTON%
       </form>
     </div>
   </div>

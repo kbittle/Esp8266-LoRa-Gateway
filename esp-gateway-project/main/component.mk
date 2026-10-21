@@ -1,10 +1,10 @@
-# Include SWSD003 header paths
-COMPONENT_ADD_INCLUDEDIRS := . \
-                             ../SWSD003/sx126x/sx126x_driver/src \
-                             ../SWSD003/common/inc
+# Include directories
+COMPONENT_ADD_INCLUDEDIRS := .
 
-# Include SWSD003 driver C files into compilation
-COMPONENT_SRCDIRS := . \
-                     ../SWSD003/sx126x/sx126x_driver/src
+# Source directories
+COMPONENT_SRCDIRS := .
+
+# Include MQTT component headers
+COMPONENT_PRIV_INCLUDEDIRS := $(IDF_PATH)/components/mqtt/esp-mqtt/include
 
 COMPONENT_EMBED_TXTFILES := index.html
